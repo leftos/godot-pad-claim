@@ -124,6 +124,7 @@ public sealed class ClaimGestureTests
         (TimeSpan At, DeviceChanged Event) changed = Assert.Single(Of<DeviceChanged>(events));
         Assert.Equal((Ms(1000), DeviceStatus.Ready), (changed.At, changed.Event.Snapshot.Status));
         Assert.Equal(new AxisRest(-0.98f, 0f, true), claimer.RestOf(0, 1));
+        Assert.Equal(new AxisRest(0f, 0f, false), claimer.RestOf(0, 0));
         (TimeSpan At, SeatClaimed Event) claimed = Assert.Single(Of<SeatClaimed>(events));
         Assert.Equal(Ms(2100), claimed.At);
     }
@@ -232,6 +233,123 @@ public sealed class ClaimGestureTests
         Assert.Empty(claimer.Axis(7, 0, 1f, Ms(150)));
         Assert.Empty(claimer.Tick(Ms(200)));
         Assert.Empty(claimer.Devices);
+    }
+
+    /// <summary>A release of a button never seen down, while settling, restarts the quiet window like any button change.</summary>
+    [Fact]
+    public void UnrecordedReleaseWhileSettlingRestartsTheWindow()
+    {
+        PadClaimer claimer = new(PadClaimSettings.Empty);
+
+        IReadOnlyList<(TimeSpan At, ClaimEvent Event)> events = ConnectedPad(0).Release(900, 0, A).Until(2000).Run(claimer);
+
+        (TimeSpan At, DeviceChanged Event) changed = Assert.Single(Of<DeviceChanged>(events));
+        Assert.Equal((Ms(1900), DeviceStatus.Ready), (changed.At, changed.Event.Snapshot.Status));
+    }
+
+    /// <summary>A second button pressed before the first is released is a chord, never a confirm.</summary>
+    [Fact]
+    public void ChordIsNotAConfirm()
+    {
+        PadClaimer claimer = new(PadClaimSettings.Empty);
+        PadScript script = ConnectedPad(0).Press(1500, 0, A).Press(1550, 0, B).Release(1600, 0, A).Release(1700, 0, B);
+
+        IReadOnlyList<(TimeSpan At, ClaimEvent Event)> events = script.Run(claimer);
+
+        Assert.Equal([(Ms(1600), A), (Ms(1700), B)], Of<ClaimStarted>(events).Select(started => (started.At, started.Event.FirstButton)));
+        Assert.Empty(Of<SeatClaimed>(events));
+    }
+
+    /// <summary>A confirm pressed within the window still claims when its release comes after the window ends.</summary>
+    [Fact]
+    public void ConfirmPressedInTimeAndReleasedLateStillClaims()
+    {
+        PadClaimer claimer = new(PadClaimSettings.Empty);
+
+        IReadOnlyList<(TimeSpan At, ClaimEvent Event)> events = Hold(Hold(ConnectedPad(0), 0, A, 1500, 1600), 0, B, 4500, 4700).Run(claimer);
+
+        Assert.Empty(Of<ClaimCancelled>(events));
+        (TimeSpan At, SeatClaimed Event) claimed = Assert.Single(Of<SeatClaimed>(events));
+        Assert.Equal(Ms(4700), claimed.At);
+    }
+
+    /// <summary>A confirm pressed exactly at the confirm window's end claims.</summary>
+    [Fact]
+    public void ConfirmPressedAtTheWindowEdgeClaims()
+    {
+        PadClaimer claimer = new(PadClaimSettings.Empty);
+
+        IReadOnlyList<(TimeSpan At, ClaimEvent Event)> events = Hold(Hold(ConnectedPad(0), 0, A, 1500, 1600), 0, B, 4600, 4700).Run(claimer);
+
+        (TimeSpan At, SeatClaimed Event) claimed = Assert.Single(Of<SeatClaimed>(events));
+        Assert.Equal(Ms(4700), claimed.At);
+    }
+
+    /// <summary>A confirm pressed 10 ms after the confirm window's end does not claim.</summary>
+    [Fact]
+    public void ConfirmPressedJustPastTheWindowDoesNot()
+    {
+        PadClaimer claimer = new(PadClaimSettings.Empty);
+
+        IReadOnlyList<(TimeSpan At, ClaimEvent Event)> events = Hold(Hold(ConnectedPad(0), 0, A, 1500, 1600), 0, B, 4610, 4710).Run(claimer);
+
+        (TimeSpan At, ClaimCancelled Event) cancelled = Assert.Single(Of<ClaimCancelled>(events));
+        Assert.Equal((Ms(4610), CancelReason.Timeout), (cancelled.At, cancelled.Event.Reason));
+        Assert.Empty(Of<SeatClaimed>(events));
+    }
+
+    /// <summary>Re-arming with the first button again restarts the confirm window from the new release.</summary>
+    [Fact]
+    public void ReArmRestartsTheConfirmWindow()
+    {
+        PadClaimer claimer = new(PadClaimSettings.Empty);
+        PadScript script = Hold(Hold(ConnectedPad(0), 0, A, 1500, 1600), 0, A, 4000, 4100);
+
+        IReadOnlyList<(TimeSpan At, ClaimEvent Event)> events = Hold(script, 0, B, 6000, 6100).Run(claimer);
+
+        Assert.Empty(Of<ClaimCancelled>(events));
+        (TimeSpan At, SeatClaimed Event) claimed = Assert.Single(Of<SeatClaimed>(events));
+        Assert.Equal(Ms(6100), claimed.At);
+    }
+
+    /// <summary>A hold of exactly the minimum claim hold starts a claim.</summary>
+    [Fact]
+    public void HoldOfExactlyMinClaimHoldStarts()
+    {
+        PadClaimer claimer = new(PadClaimSettings.Empty);
+
+        IReadOnlyList<(TimeSpan At, ClaimEvent Event)> events = Hold(ConnectedPad(0), 0, A, 1500, 1550).Run(claimer);
+
+        (TimeSpan At, ClaimStarted Event) started = Assert.Single(Of<ClaimStarted>(events));
+        Assert.Equal((Ms(1550), A), (started.At, started.Event.FirstButton));
+    }
+
+    /// <summary>A hold of exactly the maximum claim hold starts a claim.</summary>
+    [Fact]
+    public void HoldOfExactlyMaxClaimHoldStarts()
+    {
+        PadClaimer claimer = new(PadClaimSettings.Empty);
+
+        IReadOnlyList<(TimeSpan At, ClaimEvent Event)> events = Hold(ConnectedPad(0), 0, A, 1500, 3500).Run(claimer);
+
+        (TimeSpan At, ClaimStarted Event) started = Assert.Single(Of<ClaimStarted>(events));
+        Assert.Equal((Ms(3500), A), (started.At, started.Event.FirstButton));
+    }
+
+    /// <summary>An axis moving inside the still band while settling widens its recorded spread without restarting the window.</summary>
+    [Fact]
+    public void AxisRestRecordsItsSpread()
+    {
+        PadClaimer claimer = new(PadClaimSettings.Empty);
+
+        IReadOnlyList<(TimeSpan At, ClaimEvent Event)> events = ConnectedPad(0).Axis(500, 0, 0, 0.03f).Until(1100).Run(claimer);
+
+        (TimeSpan At, DeviceChanged Event) changed = Assert.Single(Of<DeviceChanged>(events));
+        Assert.Equal((Ms(1000), DeviceStatus.Ready), (changed.At, changed.Event.Snapshot.Status));
+        AxisRest rest = Assert.IsType<AxisRest>(claimer.RestOf(0, 0));
+        Assert.Equal(0f, rest.Centre);
+        Assert.Equal(0.03f, rest.Spread, 1e-6f);
+        Assert.True(rest.Known);
     }
 
     private static TimeSpan Ms(int milliseconds) => TimeSpan.FromMilliseconds(milliseconds);

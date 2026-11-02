@@ -66,7 +66,8 @@ internal sealed class NoiseDetector(ClaimTuning tuning)
         }
 
         TimeSpan mean = (times[^1] - times[0]) / (times.Count - 1);
-        var bound = TimeSpan.FromTicks(Math.Max(tuning.RepeatJitterFloor.Ticks, (long)(mean.Ticks * (double)tuning.RepeatJitterFraction)));
+        long fractionTicks = (long)Math.Round(mean.Ticks * (double)tuning.RepeatJitterFraction);
+        var bound = TimeSpan.FromTicks(Math.Max(tuning.RepeatJitterFloor.Ticks, fractionTicks));
         for (int index = 1; index < times.Count; index++)
         {
             if ((times[index] - times[index - 1] - mean).Duration() > bound)

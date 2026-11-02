@@ -172,6 +172,52 @@ public sealed class NoiseTests
         Assert.Equal(DeviceStatus.Suspect, StatusOf(claimer, 0));
     }
 
+    /// <summary>A button down at connect and released at once only delays Ready: its true press time is unknown.</summary>
+    [Fact]
+    public void ButtonDownAtConnectReleasedAtOnceIsNotSuspect()
+    {
+        PadClaimer claimer = new(PadClaimSettings.Empty);
+
+        IReadOnlyList<(TimeSpan At, ClaimEvent Event)> events = new PadScript().Connect(0, 0, [A], Centred).Release(5, 0, A).Until(1005).Run(claimer);
+
+        (TimeSpan At, DeviceChanged Event) changed = Assert.Single(Of<DeviceChanged>(events));
+        Assert.Equal((Ms(1005), DeviceStatus.Ready), (changed.At, changed.Event.Snapshot.Status));
+    }
+
+    /// <summary>Presses whose intervals sit exactly at the jitter bound (4% of a 1000 ms mean) are periodic.</summary>
+    [Fact]
+    public void RepeatAtTheJitterBoundIsSuspect()
+    {
+        PadClaimer claimer = new(PadClaimSettings.Empty);
+
+        IReadOnlyList<(TimeSpan At, ClaimEvent Event)> events = Presses(ConnectedPad(0), C, 100, 2000, 3040, 4000, 5000, 6000).Run(claimer);
+
+        AssertSuspect(Of<DeviceChanged>(events)[^1], Ms(6000), SuspectReason.RepeatingButton, [C]);
+    }
+
+    /// <summary>A hold of exactly the sub-human limit is human.</summary>
+    [Fact]
+    public void HoldOfTenMillisecondsIsNotSubHuman()
+    {
+        PadClaimer claimer = new(PadClaimSettings.Empty);
+
+        IReadOnlyList<(TimeSpan At, ClaimEvent Event)> events = Hold(ConnectedPad(0), D, 1500, 1510).Run(claimer);
+
+        Assert.DoesNotContain(Of<DeviceChanged>(events), changed => changed.Event.Snapshot.Status == DeviceStatus.Suspect);
+        Assert.Equal(DeviceStatus.Ready, StatusOf(claimer, 0));
+    }
+
+    /// <summary>A hold just under the sub-human limit marks the pad suspect.</summary>
+    [Fact]
+    public void HoldUnderTenMillisecondsIsSubHuman()
+    {
+        PadClaimer claimer = new(PadClaimSettings.Empty);
+
+        IReadOnlyList<(TimeSpan At, ClaimEvent Event)> events = Hold(ConnectedPad(0), D, 1500, 1509).Run(claimer);
+
+        AssertSuspect(Of<DeviceChanged>(events)[^1], Ms(1509), SuspectReason.SubHumanToggle, [D]);
+    }
+
     private static void AssertSuspect((TimeSpan At, DeviceChanged Event) changed, TimeSpan at, SuspectReason reasons, int[] buttons)
     {
         DeviceSnapshot snapshot = changed.Event.Snapshot;

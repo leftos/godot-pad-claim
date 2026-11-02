@@ -13,6 +13,7 @@ internal sealed class DeviceTracker(int device, DeviceIdentity identity, ClaimTu
     private readonly Dictionary<int, AxisSample> axes = [];
     private readonly NoiseDetector noise = new(tuning);
     private readonly SortedSet<int> suspectButtons = [];
+    private readonly HashSet<int> downAtConnect = [];
     private Dictionary<int, AxisRest> rests = [];
     private DeviceStatus status = DeviceStatus.Settling;
     private SuspectReason reasons;
@@ -48,6 +49,7 @@ internal sealed class DeviceTracker(int device, DeviceIdentity identity, ClaimTu
         foreach (int button in buttonsDown)
         {
             pressedAt[button] = now;
+            downAtConnect.Add(button);
         }
 
         for (int axis = 0; axis < axisValues.Count; axis++)
@@ -81,10 +83,12 @@ internal sealed class DeviceTracker(int device, DeviceIdentity identity, ClaimTu
 
         if (!pressedAt.Remove(button, out TimeSpan downAt))
         {
+            ReleaseNeverSeenDown(button, now);
             return false;
         }
 
-        if (DetectorsApply && noise.IsSubHuman(now - downAt))
+        bool pressTimeKnown = !downAtConnect.Remove(button);
+        if (pressTimeKnown && DetectorsApply && noise.IsSubHuman(now - downAt))
         {
             Suspect(SuspectReason.SubHumanToggle, [button], events);
         }
@@ -202,6 +206,18 @@ internal sealed class DeviceTracker(int device, DeviceIdentity identity, ClaimTu
         if (DetectorsApply && noise.PressIsRepeating(button, now))
         {
             Suspect(SuspectReason.RepeatingButton, [button], events);
+        }
+    }
+
+    /// <summary>
+    /// A release of a button not recorded as down (the connect-time read missed it) is still a button change while the pad
+    /// settles, so it restarts the quiet window; outside settling it is ignored.
+    /// </summary>
+    private void ReleaseNeverSeenDown(int button, TimeSpan now)
+    {
+        if (status == DeviceStatus.Settling)
+        {
+            RestartQuietWindowByButton(button, now);
         }
     }
 

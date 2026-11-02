@@ -172,6 +172,22 @@ public sealed class SeatTests
         Assert.Equal(DeviceStatus.Ready, StatusOf(claimer, 3));
     }
 
+    /// <summary>Releasing a vacant seat forgets a holder that disconnected, so its return is not given the seat.</summary>
+    [Fact]
+    public void ReleaseSeatForgetsADisconnectedHolder()
+    {
+        PadClaimer claimer = new(PadClaimSettings.Empty);
+        CleanClaim(ConnectedPad(0)).Disconnect(3000, 0).Until(3200).Run(claimer);
+
+        Assert.Empty(claimer.ReleaseSeat(Ms(3200)));
+
+        IReadOnlyList<(TimeSpan At, ClaimEvent Event)> later = new PadScript().Connect(3500, 3, NoButtons, Centred).Until(4600).Run(claimer);
+
+        Assert.Empty(Of<SeatRestored>(later));
+        Assert.Null(claimer.SeatDevice);
+        Assert.Equal(DeviceStatus.Ready, StatusOf(claimer, 3));
+    }
+
     /// <summary>Only the seat device's buttons and axes reach the game.</summary>
     [Fact]
     public void OnlyTheSeatDeviceIsAccepted()
