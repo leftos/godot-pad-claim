@@ -8,7 +8,7 @@ The toolchain, the commands and their ceilings, the hooks and how tests run.
 |---|---|---|
 | .NET SDK | `global.json` names 10.0.401 and rolls forward to the latest feature band (`latestFeature`); the test runner is Microsoft.Testing.Platform | `dotnet` |
 | CSharpier | 1.3.0, pinned in `.config/dotnet-tools.json` | `dotnet tool restore` once per clone |
-| PowerShell | 7 or later (`padclaim.ps1` requires it, and the hook scripts and `tools/gate.ps1` run under `pwsh`) | `pwsh` |
+| PowerShell | 7.4 or later (`padclaim.ps1` requires it, and the hook scripts and `tools/gate.ps1` run under `pwsh`) | `pwsh` |
 | prek | the git hooks in `prek.toml` | `prek install` once per clone |
 | gitleaks | the secrets scan the `gitleaks` hook runs on staged changes | `gitleaks` |
 | PSScriptAnalyzer | the lint the `psscriptanalyzer` hook runs, under `PSScriptAnalyzerSettings.psd1` | a PowerShell module |
@@ -30,7 +30,7 @@ The gate kills a run for one of three reasons, each exit 124: it stalled (no out
 | Command | Does | Ceiling |
 |---|---|---|
 | `build [-Release]` | `dotnet build GodotPadClaim.slnx -warnaserror`, Debug unless `-Release` | 300 s |
-| `test [-Filter "*X"]` | `dotnet build -c Release -warnaserror` of the solution, then `dotnet test -c Release --no-build`; `-Filter` becomes `--filter-class` and fails (exit 9) when no test ran anywhere; the rest forwards | build 300 s, then 120 s; 60 s with `-Filter` |
+| `test [-Filter "*X"]` | `dotnet build -c Release -warnaserror` of the solution, then `dotnet test -c Release --no-build`; `-Filter` becomes `--filter-class` and fails (exit 9) when no test ran, checked per test assembly (with one test project that is the whole run); the rest forwards | build 300 s, then 120 s; 60 s with `-Filter` |
 | `format [-Check]` | `dotnet csharpier format .`, then `dotnet format style` and `dotnet format analyzers` at `--severity info`, then `tools/hooks/Test-LineLength.ps1 -All`; `-Check` only verifies and writes nothing | 180 s each, 60 s for the line check |
 | `help` | prints the list | |
 

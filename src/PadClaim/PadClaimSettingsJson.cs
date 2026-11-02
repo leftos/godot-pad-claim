@@ -17,6 +17,15 @@ public static class PadClaimSettingsJson
     public static string Write(PadClaimSettings settings)
     {
         ArgumentNullException.ThrowIfNull(settings);
+        if (settings.Rules.IsDefault)
+        {
+            throw new ArgumentException("The settings' Rules array is uninitialised (default); use an empty array for no rules.", nameof(settings));
+        }
+
+        if (settings.Rules.Any(rule => rule?.Device is null))
+        {
+            throw new ArgumentException("A rule in the settings is null or has a null device; every rule must name its device.", nameof(settings));
+        }
 
         SettingsDocument document = new(CurrentSchemaVersion, [.. settings.Rules.Select(ToDocument)]);
         return JsonSerializer.Serialize(document, PadClaimJsonContext.Default.SettingsDocument);
@@ -66,9 +75,21 @@ public static class PadClaimSettingsJson
             return false;
         }
 
+        if (document.Rules.Any(rule => rule is null))
+        {
+            error = "The settings JSON has a null rule.";
+            return false;
+        }
+
         if (document.Rules.Any(rule => rule.Device is null))
         {
             error = "A rule in the settings JSON has no device.";
+            return false;
+        }
+
+        if (document.Rules.Any(rule => rule.Device.Name is null))
+        {
+            error = "A device in the settings JSON has no name.";
             return false;
         }
 
@@ -86,7 +107,8 @@ public static class PadClaimSettingsJson
     private static DeviceRule FromDocument(RuleDocument rule)
     {
         ImmutableArray<int> blocked = rule.BlockedButtons is null ? [] : [.. rule.BlockedButtons];
-        return new DeviceRule(rule.Device, rule.Verdict, blocked);
+        DeviceIdentity device = string.IsNullOrEmpty(rule.Device.Serial) ? rule.Device with { Serial = null } : rule.Device;
+        return new DeviceRule(device, rule.Verdict, blocked);
     }
 }
 
@@ -94,7 +116,14 @@ public static class PadClaimSettingsJson
 internal sealed record SettingsDocument(int SchemaVersion, List<RuleDocument>? Rules);
 
 /// <summary>One saved rule. Everything may be absent, so the reader can refuse or default it.</summary>
-internal sealed record RuleDocument(DeviceIdentity Device, DeviceVerdict Verdict, List<int>? BlockedButtons);
+internal sealed record RuleDocument(
+    DeviceIdentity Device,
+    [property: JsonConverter(typeof(VerdictNameConverter))] DeviceVerdict Verdict,
+    List<int>? BlockedButtons
+);
+
+/// <summary>Reads a verdict by its name only: a number, even one the enum defines, is refused.</summary>
+internal sealed class VerdictNameConverter() : JsonStringEnumConverter<DeviceVerdict>(namingPolicy: null, allowIntegerValues: false);
 
 /// <summary>The source-generated serializers for the settings document; nothing reflects at runtime.</summary>
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase, UseStringEnumConverter = true)]

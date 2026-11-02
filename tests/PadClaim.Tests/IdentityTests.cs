@@ -80,9 +80,17 @@ public sealed class IdentityTests
         var empty = DeviceIdentity.FromJoyInfo(new Dictionary<string, string>(), "Joypad 3");
         Assert.Equal(new DeviceIdentity(0, 0, "Joypad 3", null), empty);
 
-        Dictionary<string, string> junk = new() { ["vendor_id"] = "x", ["serial_number"] = "" };
+        Dictionary<string, string> junk = new()
+        {
+            ["raw_name"] = "",
+            ["vendor_id"] = "x",
+            ["serial_number"] = "",
+        };
         var parsed = DeviceIdentity.FromJoyInfo(junk, "Joypad 4");
         Assert.Equal(0, parsed.VendorId);
+        Assert.Equal("Joypad 4", parsed.Name);
         Assert.Null(parsed.Serial);
+
+        Assert.Throws<ArgumentNullException>(() => DeviceIdentity.FromJoyInfo(junk, null!));
     }
 }

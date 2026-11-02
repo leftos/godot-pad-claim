@@ -16,6 +16,7 @@ public sealed record DeviceIdentity(int VendorId, int ProductId, string Name, st
     public static DeviceIdentity FromJoyInfo(IReadOnlyDictionary<string, string> info, string fallbackName)
     {
         ArgumentNullException.ThrowIfNull(info);
+        ArgumentNullException.ThrowIfNull(fallbackName);
 
         return new DeviceIdentity(
             ReadId(info, "vendor_id"),

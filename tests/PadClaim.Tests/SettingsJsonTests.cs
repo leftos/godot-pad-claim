@@ -97,6 +97,82 @@ public sealed class SettingsJsonTests
         Assert.True(rule.BlockedButtons.IsEmpty);
     }
 
+    /// <summary>A null entry in the rules array is refused rather than thrown.</summary>
+    [Fact]
+    public void RejectsNullRule()
+    {
+        bool read = PadClaimSettingsJson.TryRead("{\"schemaVersion\":1,\"rules\":[null]}", out PadClaimSettings? settings, out string? error);
+
+        Assert.False(read);
+        Assert.Null(settings);
+        Assert.NotNull(error);
+    }
+
+    /// <summary>A device with a missing or null name is refused: the name is what matches a pad without ids.</summary>
+    [Theory]
+    [InlineData("{\"vendorId\":1118,\"productId\":654,\"serial\":null}")]
+    [InlineData("{\"vendorId\":1118,\"productId\":654,\"name\":null,\"serial\":null}")]
+    public void RejectsDeviceWithoutName(string device)
+    {
+        string json = $"{{\"schemaVersion\":1,\"rules\":[{{\"device\":{device},\"verdict\":\"Blocked\"}}]}}";
+
+        bool read = PadClaimSettingsJson.TryRead(json, out PadClaimSettings? settings, out string? error);
+
+        Assert.False(read);
+        Assert.Null(settings);
+        Assert.NotNull(error);
+    }
+
+    /// <summary>A verdict that is a number, or a name the enum does not have, is refused.</summary>
+    [Theory]
+    [InlineData("7")]
+    [InlineData("\"Maybe\"")]
+    public void RejectsUndefinedVerdict(string verdict)
+    {
+        string json = $"{{\"schemaVersion\":1,\"rules\":[{{\"device\":{{\"vendorId\":1,\"productId\":2,\"name\":\"Pad\"}},\"verdict\":{verdict}}}]}}";
+
+        bool read = PadClaimSettingsJson.TryRead(json, out PadClaimSettings? settings, out string? error);
+
+        Assert.False(read);
+        Assert.Null(settings);
+        Assert.NotNull(error);
+    }
+
+    /// <summary>An empty saved serial reads as no serial, as <see cref="DeviceIdentity.FromJoyInfo"/> reads a live pad's.</summary>
+    [Fact]
+    public void EmptySerialReadsAsNull()
+    {
+        const string json = """
+            {"schemaVersion":1,"rules":[{"device":{"vendorId":1118,"productId":654,"name":"Pad","serial":""},"verdict":"Blocked"}]}
+            """;
+
+        bool read = PadClaimSettingsJson.TryRead(json, out PadClaimSettings? settings, out string? error);
+
+        Assert.True(read, error);
+        Assert.NotNull(settings);
+        Assert.Null(Assert.Single(settings.Rules).Device.Serial);
+    }
+
+    /// <summary>Writing settings whose rules array was never initialised is a caller bug and throws.</summary>
+    [Fact]
+    public void WriteRejectsDefaultRules()
+    {
+        ArgumentException thrown = Assert.Throws<ArgumentException>(() => PadClaimSettingsJson.Write(new PadClaimSettings(default)));
+
+        Assert.Contains("Rules", thrown.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>Writing a rule with no device is a caller bug and throws, rather than writing what the reader refuses.</summary>
+    [Fact]
+    public void WriteRejectsNullDevice()
+    {
+        PadClaimSettings settings = new([new DeviceRule(null!, DeviceVerdict.Blocked, [])]);
+
+        ArgumentException thrown = Assert.Throws<ArgumentException>(() => PadClaimSettingsJson.Write(settings));
+
+        Assert.Contains("device", thrown.Message, StringComparison.Ordinal);
+    }
+
     /// <summary>The empty settings write as an empty rules array and read back empty.</summary>
     [Fact]
     public void EmptyIsEmpty()

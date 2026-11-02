@@ -19,7 +19,7 @@ Usage: coming with the first release.
 
 - **Quiet window.** After a pad connects it must stay still for about one second before it is offered. Activity during the window restarts it; a pad that never settles within ten seconds is marked suspect.
 - **Release-to-claim.** A claim starts when a button is released after being held between 50 ms and 2 s. Pressing alone never claims, so a button that is always down cannot start one.
-- **A different second button.** The claim completes when a different button is pressed and released within 3 s of the first release. One stuck or self-repeating button cannot produce that by chance.
+- **A different second button.** The claim completes when a different button, pressed within 3 s of the first release, is released after a hold between 50 ms and 2 s. One stuck or self-repeating button cannot produce that by chance.
 - **Suspect devices are never offered.** A pad with a stuck, self-repeating or sub-human-speed button, or a jittery axis, is quarantined. Axes never claim.
 - **A blocklist the host persists.** Rules are kept per device and per button, keyed on vendor and product IDs, with the name as a fallback. The library never touches the file system: it hands the host settings to store and takes them back as JSON.
 

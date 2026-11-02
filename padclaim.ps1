@@ -185,8 +185,8 @@ function Invoke-Test {
         -Log (Join-Path $script:Tmp 'test-build.log') -Seconds $script:BuildSeconds -Slot heavy `
         -Gate @('dotnet', 'build', 'GodotPadClaim.slnx', '-c', 'Release', '-warnaserror')
     # A filtered run reports an assembly with nothing to run as exit 8, which SDK 10 does not forgive for the whole run,
-    # so each assembly's 8 is ignored and the run as a whole must still run at least one test, exiting 9 when the filter
-    # matched nothing anywhere.
+    # so each assembly's 8 is ignored; the minimum of one test is checked per test assembly (with one test project that is
+    # the whole run), which exits 9 when the filter matched nothing.
     $filter = if ($parsed.Options['Filter']) {
         @('--filter-class', $parsed.Options['Filter'], '--ignore-exit-code', '8', '--minimum-expected-tests', '1')
     }
