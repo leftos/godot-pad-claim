@@ -12,6 +12,9 @@
                  (exit 9). The rest forwards.
       format     dotnet csharpier format ., then dotnet format style and dotnet format analyzers at --severity info,
                  then the 150-character line check (tools/hooks/Test-LineLength.ps1 -All). -Check only verifies.
+      demo       Build demo/PadClaimDemo.csproj in Debug, then drive Godot headless: --import --quit (a pass red on
+                 the cold-cache line alone runs again, up to three) and --build-solutions --quit.
+                 $env:GODOT_PATH overrides the console executable.
       help       This list.
 
     MSBuild switches are written in dash form (-warnaserror, -p:Name=Value) rather than with a slash: Git Bash's path
@@ -36,7 +39,7 @@
     Justification = 'Top-level params are read from script scope by the subcommands.')]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('', 'help', 'build', 'test', 'format')]
+    [ValidateSet('', 'help', 'build', 'test', 'format', 'demo')]
     [string]$Command = '',
 
     # Everything after the subcommand. Each subcommand takes the options it knows and forwards the rest.
@@ -59,6 +62,16 @@ $script:FormatSeconds = 180
 $script:TestSeconds = 120
 $script:FilteredTestSeconds = 60
 $script:LineLengthSeconds = 60
+$script:DemoProject = 'demo'
+$script:GodotConsole = if ($env:GODOT_PATH) { $env:GODOT_PATH } else { 'F:\Godot\Godot_console.exe' }
+$script:ImportSeconds = 300
+$script:BuildSolutionsSeconds = 180
+# How many times a cold import may run. A pass can end on the same pre-import line as the one before it, because the
+# importer writes its cache as it goes, so the import gets three tries at a cache it is still filling.
+$script:ImportPasses = 3
+# What a cold import complains about before it has imported anything: the cache the pass is only now writing. The demo
+# has no imported art, so this is the whole list; anything else an import reports is a real failure.
+$script:ImportMarkers = @('.godot/imported/')
 
 Set-Location $script:Root
 New-Item -ItemType Directory -Force $script:Tmp | Out-Null
@@ -150,6 +163,9 @@ Build and check
                                       and fails when no test ran; the rest forwards
   format [-Check]                     csharpier, then dotnet format style and analyzers (--severity info), then
                                       the 150-character line check; -Check verifies only and writes nothing
+  demo                                Debug build of demo/PadClaimDemo.csproj, then Godot --headless --import --quit
+                                      (a cold pass red on the import-cache line alone is retried, up to three) and
+                                      --build-solutions --quit; GODOT_PATH overrides the console executable
   help                                This list
 
 MSBuild switches are written in dash form (-warnaserror, -p:Name=Value): Git Bash rewrites a /switch into a Windows
@@ -240,6 +256,107 @@ function Invoke-Format {
         -Gate @('pwsh', (Join-Path $script:Root 'tools\hooks\Test-LineLength.ps1'), '-All')
 }
 
+# --- demo ---
+
+# Whether a red import failed at nothing but the lines $script:ImportMarkers names, the block a cold cache always
+# prints. A log holding no ERROR: line at all passes the test, since nothing in it goes unexplained.
+function Test-ImportRedOnMarker {
+    [OutputType([bool])]
+    param([string]$Log)
+    if (-not (Test-Path -LiteralPath $Log)) {
+        return $false
+    }
+    foreach ($line in @(Get-Content -LiteralPath $Log)) {
+        # The gate prefixes every line it writes with an ISO timestamp and a stream tag, so the payload is what the
+        # markers are read from rather than the line as it stands.
+        $text = (([string]$line) -replace '^\d{4}-\d\d-\d\dT\S+ (?:gat|out|err) ', '').Trim()
+        if (-not $text.StartsWith('ERROR:')) {
+            continue
+        }
+        $explained = $false
+        foreach ($marker in $script:ImportMarkers) {
+            if ($text.Contains($marker)) {
+                $explained = $true
+                break
+            }
+        }
+        if (-not $explained) {
+            return $false
+        }
+    }
+    return $true
+}
+
+# The demo project's Debug build on its own, so a run that follows opens with a compiling assembly: a Godot import or
+# solutions pass against source that no longer compiles reports on the last good one instead.
+function Invoke-DemoBuild {
+    Invoke-Gate -Title 'dotnet build demo/PadClaimDemo.csproj -c Debug -warnaserror' `
+        -Log (Join-Path $script:Tmp 'demo-dotnet-build.log') -Seconds $script:BuildSeconds -Slot heavy `
+        -Gate @('dotnet', 'build', "$($script:DemoProject)/PadClaimDemo.csproj", '-c', 'Debug', '-warnaserror')
+}
+
+# The import, before --build-solutions: with nothing under .godot/imported the editor cannot load the project and the
+# solutions pass can die before it builds. The first pass can end red on the cold-cache line alone, so such a pass runs
+# again, up to three passes; a gate kill or any other red stops here.
+function Invoke-DemoImport {
+    $import = @($script:GodotConsole, '--headless', '--path', $script:DemoProject, '--import', '--quit')
+    for ($pass = 1; $pass -le $script:ImportPasses; $pass++) {
+        $name = if ($pass -eq 1) { 'demo-import' } else { "demo-import-$pass" }
+        $log = Join-Path $script:Tmp "$name.log"
+        Write-Section "Godot --import --quit (pass $pass of $($script:ImportPasses))"
+        & $script:GateScript -Log $log -TimeoutSeconds $script:ImportSeconds -Slot light -- @import
+        $imported = $LASTEXITCODE
+        if ($imported -eq 0) {
+            break
+        }
+        if ($imported -eq 124) {
+            throw "Godot --import was killed by the gate: $(Get-GateKill -Log $log)"
+        }
+        if (-not (Test-ImportRedOnMarker -Log $log)) {
+            throw "Godot --import failed (exit $imported) on lines the cold-cache markers do not explain; read $log"
+        }
+        if ($pass -eq $script:ImportPasses) {
+            throw "Godot --import still failed after $($script:ImportPasses) passes (exit $imported); read $log"
+        }
+        Write-Host "the import ended red on the cold-cache line alone; running pass $($pass + 1)" -ForegroundColor Yellow
+    }
+}
+
+# Godot_console.exe is a job-object wrapper that returns only when every process in its job has exited, and a build Godot
+# runs on a tree with no live build servers births MSBuild's worker nodes and the compiler server inside that job, where
+# they idle for up to fifteen minutes after Godot itself has quit. With node reuse and shared compilation off for the
+# launch, the job empties when Godot does.
+function Invoke-DemoSolutionBuild {
+    $nodeReuse = $env:MSBUILDDISABLENODEREUSE
+    $shared = $env:UseSharedCompilation
+    $env:MSBUILDDISABLENODEREUSE = '1'
+    $env:UseSharedCompilation = 'false'
+    try {
+        Invoke-Gate -Title 'Godot --build-solutions --quit' -Log (Join-Path $script:Tmp 'demo-build.log') `
+            -Seconds $script:BuildSolutionsSeconds -Slot heavy `
+            -Gate @($script:GodotConsole, '--headless', '--path', $script:DemoProject, '--build-solutions', '--quit')
+    }
+    finally {
+        $env:MSBUILDDISABLENODEREUSE = $nodeReuse
+        $env:UseSharedCompilation = $shared
+    }
+}
+
+# The demo project through the fresh-clone order: the Debug build, the import, then the solutions pass.
+function Invoke-Demo {
+    if ($script:Rest.Count -gt 0) {
+        throw "demo takes no arguments, not: $($script:Rest -join ' ')"
+    }
+    # Before the build, so a missing engine names itself instead of surfacing three red imports later: a console that is
+    # not there writes no ERROR: line at all, which the cold-cache test reads as nothing to explain.
+    if (-not (Test-Path -LiteralPath $script:GodotConsole)) {
+        throw "Godot console not found at $($script:GodotConsole); set GODOT_PATH to Godot_console.exe"
+    }
+    Invoke-DemoBuild
+    Invoke-DemoImport
+    Invoke-DemoSolutionBuild
+}
+
 # --- dispatch ---
 
 switch ($Command) {
@@ -248,4 +365,5 @@ switch ($Command) {
     'build' { Invoke-Build }
     'test' { Invoke-Test }
     'format' { Invoke-Format }
+    'demo' { Invoke-Demo }
 }

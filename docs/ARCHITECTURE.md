@@ -1,6 +1,6 @@
 # godot-pad-claim — architecture
 
-A library that decides which gamepad a player has claimed. Layers: `PadClaim` (an engine-free core), `PadClaim.GodotInput` (a thin Godot adapter) and `PadClaim.Tests`, plus a `demo/` Godot project (planned). The core references nothing from Godot and never reads a clock: it is fed timestamped samples and returns events, so every rule is tested without an engine. Terms used in a project sense are in [glossary.md](glossary.md).
+A library that decides which gamepad a player has claimed. Layers: `PadClaim` (an engine-free core), `PadClaim.GodotInput` (a thin Godot adapter) and `PadClaim.Tests`, plus a `demo/` Godot project. The core references nothing from Godot and never reads a clock: it is fed timestamped samples and returns events, so every rule is tested without an engine. Terms used in a project sense are in [glossary.md](glossary.md).
 
 ## Task Index
 
@@ -20,7 +20,7 @@ A library that decides which gamepad a player has claimed. Layers: `PadClaim` (a
 - **`PadClaim`** (`src/PadClaim/`): the engine-free core. Owns the claim state machine fed timestamped samples, the devices, the seat and the settings records. References the .NET framework only; must never reference Godot.
 - **`PadClaim.GodotInput`** (`src/PadClaim.GodotInput/`): a thin adapter, `GodotPadSource`. Reads `Input` and `joy_connection_changed`, stamps each call with the time it runs and passes values to the core as `int`, `string` and `TimeSpan`. May reference Godot and `PadClaim`; declares no `GodotObject` subclass.
 - **`PadClaim.Tests`** (`tests/PadClaim.Tests/`): engine-free tests of the core. References `PadClaim` only; `ReferenceTests` pins that neither it nor the core references an assembly whose name starts with `Godot`.
-- **`demo/`** (planned): a Godot project that hosts the adapter and shows every device with its status.
+- **`demo/`**: a Godot project that hosts the adapter and shows every device with its status, the seat and the latest events; built with `padclaim.ps1 demo`. A debug build accepts unlisted devices, so a pad injected by godot-mcp can claim.
 
 ## Integration Footguns
 
