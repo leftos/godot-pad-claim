@@ -32,6 +32,8 @@ The gate kills a run for one of three reasons, each exit 124: it stalled (no out
 | `build [-Release]` | `dotnet build GodotPadClaim.slnx -warnaserror`, Debug unless `-Release` | 300 s |
 | `test [-Filter "*X"]` | `dotnet build -c Release -warnaserror` of the solution, then `dotnet test -c Release --no-build`; `-Filter` becomes `--filter-class` and fails (exit 9) when no test ran, checked per test assembly (with one test project that is the whole run); the rest forwards | build 300 s, then 120 s; 60 s with `-Filter` |
 | `format [-Check]` | `dotnet csharpier format .`, then `dotnet format style` and `dotnet format analyzers` at `--severity info`, then `tools/hooks/Test-LineLength.ps1 -All`; `-Check` only verifies and writes nothing | 180 s each, 60 s for the line check |
+| `demo` | Debug build of `demo/PadClaimDemo.csproj`, then Godot `--headless --import --quit` (a cold pass red on the import cache alone is retried, up to three) and `--build-solutions --quit`; stops at once when the Godot console is missing (`GODOT_PATH` overrides `F:\Godot\Godot_console.exe`) | build 300 s, import 300 s, build-solutions 180 s |
+| `smoke` | the demo's Debug build, then Godot `--headless` on `res://Smoke/ClaimSmoke.tscn`, the claim smoke on an injected clock; exits non-zero unless the taps, the A, A near-miss and the two-button claim come out as expected | 600 s |
 | `help` | prints the list | |
 
 MSBuild switches are written in dash form (`-warnaserror`, `-p:Name=Value`): Git Bash rewrites the slash form into a Windows path and MSBuild reports MSB1008.
