@@ -15,6 +15,8 @@
       demo       Build demo/PadClaimDemo.csproj in Debug, then drive Godot headless: --import --quit (a pass red on
                  the cold-cache line alone runs again, up to three) and --build-solutions --quit.
                  $env:GODOT_PATH overrides the console executable.
+      smoke      The demo build, then Godot headless on res://Smoke/ClaimSmoke.tscn, which injects button presses and
+                 exits non-zero unless the taps, the A-A near-miss and the two-button claim all come out as expected.
       help       This list.
 
     MSBuild switches are written in dash form (-warnaserror, -p:Name=Value) rather than with a slash: Git Bash's path
@@ -39,7 +41,7 @@
     Justification = 'Top-level params are read from script scope by the subcommands.')]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('', 'help', 'build', 'test', 'format', 'demo')]
+    [ValidateSet('', 'help', 'build', 'test', 'format', 'demo', 'smoke')]
     [string]$Command = '',
 
     # Everything after the subcommand. Each subcommand takes the options it knows and forwards the rest.
@@ -66,6 +68,8 @@ $script:DemoProject = 'demo'
 $script:GodotConsole = if ($env:GODOT_PATH) { $env:GODOT_PATH } else { 'F:\Godot\Godot_console.exe' }
 $script:ImportSeconds = 300
 $script:BuildSolutionsSeconds = 180
+$script:SmokeSeconds = 600
+$script:SmokeScene = 'res://Smoke/ClaimSmoke.tscn'
 # How many times a cold import may run. A pass can end on the same pre-import line as the one before it, because the
 # importer writes its cache as it goes, so the import gets three tries at a cache it is still filling.
 $script:ImportPasses = 3
@@ -166,6 +170,9 @@ Build and check
   demo                                Debug build of demo/PadClaimDemo.csproj, then Godot --headless --import --quit
                                       (a cold pass red on the import-cache line alone is retried, up to three) and
                                       --build-solutions --quit; GODOT_PATH overrides the console executable
+  smoke                               Debug build of demo/PadClaimDemo.csproj, then Godot --headless on
+                                      res://Smoke/ClaimSmoke.tscn; exits non-zero unless the taps, the A-A
+                                      near-miss and the two-button claim come out as expected
   help                                This list
 
 MSBuild switches are written in dash form (-warnaserror, -p:Name=Value): Git Bash rewrites a /switch into a Windows
@@ -342,19 +349,40 @@ function Invoke-DemoSolutionBuild {
     }
 }
 
+# Before anything is built, so a missing engine names itself instead of surfacing three red imports later: a console
+# that is not there writes no ERROR: line at all, which the cold-cache test reads as nothing to explain.
+function Assert-GodotConsole {
+    if (-not (Test-Path -LiteralPath $script:GodotConsole)) {
+        throw "Godot console not found at $($script:GodotConsole); set GODOT_PATH to Godot_console.exe"
+    }
+}
+
 # The demo project through the fresh-clone order: the Debug build, the import, then the solutions pass.
 function Invoke-Demo {
     if ($script:Rest.Count -gt 0) {
         throw "demo takes no arguments, not: $($script:Rest -join ' ')"
     }
-    # Before the build, so a missing engine names itself instead of surfacing three red imports later: a console that is
-    # not there writes no ERROR: line at all, which the cold-cache test reads as nothing to explain.
-    if (-not (Test-Path -LiteralPath $script:GodotConsole)) {
-        throw "Godot console not found at $($script:GodotConsole); set GODOT_PATH to Godot_console.exe"
-    }
+    Assert-GodotConsole
     Invoke-DemoBuild
     Invoke-DemoImport
     Invoke-DemoSolutionBuild
+}
+
+# --- smoke ---
+
+# The headless claim smoke: the demo build, then the smoke scene, which injects button presses into the running engine
+# and exits 0 only when the taps, the A-A near-miss and the two-button claim all come out as expected. A non-zero exit is
+# the scene's own verdict, so it is reported with the log, whose `smoke:` lines say which scenario failed and what the
+# claimer recorded.
+function Invoke-Smoke {
+    if ($script:Rest.Count -gt 0) {
+        throw "smoke takes no arguments, not: $($script:Rest -join ' ')"
+    }
+    Assert-GodotConsole
+    Invoke-DemoBuild
+    Invoke-Gate -Title 'Godot --headless res://Smoke/ClaimSmoke.tscn' -Log (Join-Path $script:Tmp 'smoke.log') `
+        -Seconds $script:SmokeSeconds -Slot light `
+        -Gate @($script:GodotConsole, '--headless', '--path', $script:DemoProject, $script:SmokeScene)
 }
 
 # --- dispatch ---
@@ -366,4 +394,5 @@ switch ($Command) {
     'test' { Invoke-Test }
     'format' { Invoke-Format }
     'demo' { Invoke-Demo }
+    'smoke' { Invoke-Smoke }
 }

@@ -1,4 +1,4 @@
 {
   "prepWrapper": ["pwsh", "-NoProfile", "-File", "../tools/gate.ps1", "run", "--log", "{log}", "--timeout", "{ceiling}", "--slot", "heavy", "--"],
-  "scratch": { "folder": "Smoke" }
+  "scratch": { "folder": "Scratch" }
 }

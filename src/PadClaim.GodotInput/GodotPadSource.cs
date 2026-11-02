@@ -13,17 +13,31 @@ namespace PadClaim.GodotInput;
 public sealed class GodotPadSource : IDisposable
 {
     private readonly PadClaimer claimer;
+    private readonly Func<TimeSpan> clock;
     private readonly HashSet<int> connectedDevices = [];
     private bool started;
     private bool disposed;
 
-    /// <summary>Creates a source that feeds the given claimer.</summary>
+    /// <summary>Creates a source that feeds the given claimer, stamping every event with the engine's clock.</summary>
     /// <param name="claimer">The engine-free claimer that decides which pad holds the seat.</param>
     /// <exception cref="ArgumentNullException"><paramref name="claimer"/> is null.</exception>
     public GodotPadSource(PadClaimer claimer)
+        : this(claimer, Now) { }
+
+    /// <summary>Creates a source that stamps every event with a clock the host supplies.</summary>
+    /// <param name="claimer">The engine-free claimer that decides which pad holds the seat.</param>
+    /// <param name="clock">
+    /// The time each event is stamped with, for a host or a test that drives time itself. It must never go backwards.
+    /// </param>
+    /// <exception cref="ArgumentNullException">
+    /// <paramref name="claimer"/> or <paramref name="clock"/> is null.
+    /// </exception>
+    public GodotPadSource(PadClaimer claimer, Func<TimeSpan> clock)
     {
         ArgumentNullException.ThrowIfNull(claimer);
+        ArgumentNullException.ThrowIfNull(clock);
         this.claimer = claimer;
+        this.clock = clock;
     }
 
     /// <summary>Raised for every event the claimer returns, in the order it returns them.</summary>
@@ -45,7 +59,7 @@ public sealed class GodotPadSource : IDisposable
 
         Input.JoyConnectionChanged += OnJoyConnectionChanged;
         started = true;
-        TimeSpan now = Now();
+        TimeSpan now = clock();
         foreach (int device in Input.GetConnectedJoypads())
         {
             if (disposed)
@@ -70,7 +84,7 @@ public sealed class GodotPadSource : IDisposable
         ObjectDisposedException.ThrowIf(disposed, this);
         ArgumentNullException.ThrowIfNull(inputEvent);
 
-        TimeSpan now = Now();
+        TimeSpan now = clock();
         switch (inputEvent)
         {
             case InputEventJoypadButton button:
@@ -89,7 +103,7 @@ public sealed class GodotPadSource : IDisposable
     public void Tick()
     {
         ObjectDisposedException.ThrowIf(disposed, this);
-        Raise(claimer.Tick(Now()));
+        Raise(claimer.Tick(clock()));
     }
 
     /// <summary>
@@ -121,7 +135,7 @@ public sealed class GodotPadSource : IDisposable
             return;
         }
 
-        TimeSpan now = Now();
+        TimeSpan now = clock();
         int index = (int)device;
         if (connected)
         {
