@@ -10,6 +10,7 @@ public sealed class SettingsTests
 {
     private const int A = 0;
     private const int B = 1;
+    private const int C = 2;
     private const int D = 3;
     private const int BlockedButton = 7;
     private const int UnlistedPad = 7;
@@ -17,6 +18,7 @@ public sealed class SettingsTests
     private static readonly int[] NoButtons = [];
     private static readonly float[] Centred = [0f, 0f, 0f, 0f, 0f, 0f];
     private static readonly DeviceIdentity Pad0 = PadScript.IdentityOf(0);
+    private static readonly DeviceIdentity OtherPad = new(0x054C, 0x09CC, "Other pad", null);
 
     /// <summary>Plan case 24: a pad whose identity is blocked connects blocked and its gesture is ignored.</summary>
     [Fact]
@@ -159,6 +161,7 @@ public sealed class SettingsTests
 
         (TimeSpan At, SeatClaimed Event) claimed = Assert.Single(Of<SeatClaimed>(events));
         Assert.Equal((Ms(1500), 0), (claimed.At, claimed.Event.Device));
+        Assert.Equal(0, claimer.SeatDevice);
     }
 
     /// <summary>Forcing a claim on a blocked pad does nothing.</summary>
@@ -346,6 +349,447 @@ public sealed class SettingsTests
         Assert.Empty(Of<SeatRestored>(events));
         Assert.Null(claimer.SeatDevice);
         Assert.Equal(DeviceStatus.Ready, StatusOf(claimer, 3));
+    }
+
+    /// <summary>A pad without a known layout, trusted to claim and untrusted while it holds the seat, is not offered once released.</summary>
+    [Fact]
+    public void UntrustedLayoutlessHolderReturnsToNotAGamepadWhenReleased()
+    {
+        PadClaimer claimer = new(PadClaimSettings.Empty);
+        PadScript script = LayoutlessPadClaimsThenIsUntrusted().Call(4500, (pads, now) => pads.ReleaseSeat(now));
+
+        IReadOnlyList<(TimeSpan At, ClaimEvent Event)> events = CleanClaim(script, 0, 5000).Run(claimer);
+
+        AssertClaimedThenUntrusted(events);
+        AssertLostThenNotOffered(At(events, 4500), new SeatLost(0, SeatLossReason.Released));
+        Assert.DoesNotContain(Of<ClaimStarted>(events), started => started.At > Ms(4500));
+        Assert.Equal(DeviceStatus.NotAGamepad, StatusOf(claimer, 0));
+    }
+
+    /// <summary>A pad without a known layout, trusted to claim and untrusted while it holds the seat, is not offered once the seat moves.</summary>
+    [Fact]
+    public void UntrustedLayoutlessHolderReturnsToNotAGamepadWhenTheSeatMoves()
+    {
+        PadClaimer claimer = new(PadClaimSettings.Empty);
+        PadScript script = CleanClaim(LayoutlessPadClaimsThenIsUntrusted().Connect(0, 1, NoButtons, Centred, identity: OtherPad), 1, 5000);
+
+        IReadOnlyList<(TimeSpan At, ClaimEvent Event)> events = CleanClaim(script, 0, 6000).Run(claimer);
+
+        AssertClaimedThenUntrusted(events);
+        AssertLostThenNotOffered(At(events, 5600), new SeatMoved(0, 1));
+        Assert.DoesNotContain(Of<ClaimStarted>(events), started => started.Event.Device == 0 && started.At > Ms(5600));
+        Assert.Equal(DeviceStatus.NotAGamepad, StatusOf(claimer, 0));
+    }
+
+    /// <summary>A pad without a known layout given the seat by force is not offered once released.</summary>
+    [Fact]
+    public void ForceClaimedLayoutlessPadReturnsToNotAGamepad()
+    {
+        PadClaimer claimer = new(PadClaimSettings.Empty);
+        PadScript script = new PadScript()
+            .Connect(0, 0, NoButtons, Centred, isKnownGamepad: false)
+            .Call(1500, (pads, now) => pads.ForceClaim(0, now))
+            .Call(2000, (pads, now) => pads.ReleaseSeat(now));
+
+        IReadOnlyList<(TimeSpan At, ClaimEvent Event)> events = script.Run(claimer);
+
+        Assert.Equal(new SeatClaimed(0), Assert.Single(At(events, 1500)));
+        AssertLostThenNotOffered(At(events, 2000), new SeatLost(0, SeatLossReason.Released));
+        Assert.Equal(DeviceStatus.NotAGamepad, StatusOf(claimer, 0));
+    }
+
+    /// <summary>A pad blocked at connect keeps the buttons it had down, so unblocking it finds the stuck button.</summary>
+    [Fact]
+    public void UnblockedPadRemembersTheButtonsDownAtConnect()
+    {
+        PadClaimer claimer = new(RuleFor(DeviceVerdict.Blocked));
+        PadScript script = new PadScript()
+            .Connect(0, 0, [C], Centred)
+            .Call(1500, (pads, now) => pads.SetVerdict(Pad0, DeviceVerdict.None, now))
+            .Until(2600);
+
+        IReadOnlyList<(TimeSpan At, ClaimEvent Event)> events = script.Run(claimer);
+
+        (TimeSpan At, DeviceChanged Event) last = Of<DeviceChanged>(events)[^1];
+        Assert.Equal((Ms(2500), DeviceStatus.Suspect, SuspectReason.StuckButton), (last.At, last.Event.Snapshot.Status, last.Event.Snapshot.Reasons));
+        Assert.Equal<int>([C], last.Event.Snapshot.SuspectButtons);
+    }
+
+    /// <summary>A pad without a known layout keeps its axis values from connect, so trusting it records their rests.</summary>
+    [Fact]
+    public void TrustedLayoutlessPadRecordsTheAxisRestsFromConnect()
+    {
+        PadClaimer claimer = new(PadClaimSettings.Empty);
+        PadScript script = new PadScript()
+            .Connect(0, 0, NoButtons, [0f, -0.98f, 0f, 0f, 0f, 0f], isKnownGamepad: false)
+            .Call(1500, (pads, now) => pads.SetVerdict(Pad0, DeviceVerdict.Trusted, now))
+            .Until(2600);
+
+        IReadOnlyList<(TimeSpan At, ClaimEvent Event)> events = script.Run(claimer);
+
+        (TimeSpan At, DeviceChanged Event) last = Of<DeviceChanged>(events)[^1];
+        Assert.Equal((Ms(2500), DeviceStatus.Ready), (last.At, last.Event.Snapshot.Status));
+        Assert.Equal(new AxisRest(-0.98f, 0f, Known: false), claimer.RestOf(0, 1));
+    }
+
+    /// <summary>An away holder whose own rule is blocked through a wider identity is forgotten, so its unblocked return gets no seat.</summary>
+    [Fact]
+    public void AwayHolderBlockedThroughAWiderRuleIsForgotten()
+    {
+        DeviceIdentity holder = new(0x045E, 0x028E, "Pad", "S1");
+        PadClaimer claimer = new(
+            new PadClaimSettings([new DeviceRule(new DeviceIdentity(0x045E, 0x028E, "Pad", null), DeviceVerdict.None, [BlockedButton])])
+        );
+        PadScript script = CleanClaim(new PadScript().Connect(0, 0, NoButtons, Centred, identity: holder), 0, 1500)
+            .Disconnect(3000, 0)
+            .Call(3200, (pads, now) => pads.SetVerdict(new DeviceIdentity(0x045E, 0x028E, "Pad", "S2"), DeviceVerdict.Blocked, now))
+            .Connect(3500, 3, NoButtons, Centred, identity: holder)
+            .Call(4000, (pads, now) => pads.SetVerdict(holder, DeviceVerdict.None, now))
+            .Until(5100);
+
+        IReadOnlyList<(TimeSpan At, ClaimEvent Event)> events = script.Run(claimer);
+
+        Assert.Equal(DeviceStatus.Blocked, Of<DeviceAdded>(events).Single(entry => entry.Event.Snapshot.Device == 3).Event.Snapshot.Status);
+        Assert.Contains(
+            events,
+            recorded => recorded.At == Ms(5000) && recorded.Event is DeviceChanged { Snapshot: { Device: 3, Status: DeviceStatus.Ready } }
+        );
+        Assert.Empty(Of<SeatRestored>(events));
+        Assert.Null(claimer.SeatDevice);
+    }
+
+    /// <summary>
+    /// An away holder whose own rule, once a Forget removes the rule that matched it, falls through to a blocked rule is
+    /// forgotten, so its unblocked return gets no seat.
+    /// </summary>
+    [Fact]
+    public void ForgetLettingAnAwayHolderFallThroughToABlockedRuleForgetsIt()
+    {
+        DeviceIdentity holder = new(0x045E, 0x028E, "Pad", "S1");
+        DeviceIdentity twin = new(0x045E, 0x028E, "Other", "S1");
+        DeviceRule wider = new(new DeviceIdentity(0, 0, "Pad", null), DeviceVerdict.Blocked, []);
+        PadClaimer claimer = new(new PadClaimSettings([new DeviceRule(holder, DeviceVerdict.Trusted, []), wider]));
+        PadScript script = CleanClaim(new PadScript().Connect(0, 0, NoButtons, Centred, identity: holder), 0, 1500)
+            .Connect(2500, 1, NoButtons, Centred, identity: twin)
+            .Disconnect(3000, 0)
+            .Call(3200, (pads, now) => pads.Forget(new DeviceIdentity(0, 0, "Other", null), now))
+            .Disconnect(3300, 1)
+            .Connect(3500, 3, NoButtons, Centred, identity: holder)
+            .Call(4000, (pads, now) => pads.SetVerdict(holder, DeviceVerdict.None, now))
+            .Until(5100);
+
+        IReadOnlyList<(TimeSpan At, ClaimEvent Event)> events = script.Run(claimer);
+
+        DeviceRule kept = Assert.Single(Assert.Single(Of<SettingsChanged>(events), changed => changed.At == Ms(3200)).Event.Settings.Rules);
+        Assert.Equal((wider.Device, DeviceVerdict.Blocked), (kept.Device, kept.Verdict));
+        Assert.Equal(DeviceStatus.Blocked, Of<DeviceAdded>(events).Single(entry => entry.Event.Snapshot.Device == 3).Event.Snapshot.Status);
+        Assert.Contains(
+            events,
+            recorded => recorded.At == Ms(5000) && recorded.Event is DeviceChanged { Snapshot: { Device: 3, Status: DeviceStatus.Ready } }
+        );
+        Assert.Empty(Of<SeatRestored>(events));
+        Assert.Null(claimer.SeatDevice);
+    }
+
+    /// <summary>Forgetting a pad removes every rule of the connected pads it matches, so none falls through to a later rule.</summary>
+    [Fact]
+    public void ForgetRemovesEveryRuleOfTheMatchingPads()
+    {
+        DeviceIdentity pad = new(0x045E, 0x028E, "Pad 0", "S1");
+        PadClaimer claimer = new(
+            new PadClaimSettings([
+                new DeviceRule(pad, DeviceVerdict.Trusted, []),
+                new DeviceRule(new DeviceIdentity(0, 0, "Pad 0", null), DeviceVerdict.Blocked, []),
+            ])
+        );
+        PadScript script = new PadScript()
+            .Connect(0, 0, NoButtons, Centred, identity: pad)
+            .Call(1500, (pads, now) => pads.Forget(new DeviceIdentity(0x045E, 0x028E, "Other", null), now));
+
+        IReadOnlyList<(TimeSpan At, ClaimEvent Event)> events = script.Run(claimer);
+
+        AssertChangedThenSaved(At(events, 1500), DeviceStatus.Ready);
+        DeviceSnapshot snapshot = Assert.Single(claimer.Devices);
+        Assert.Equal((DeviceStatus.Ready, false), (snapshot.Status, snapshot.Trusted));
+        Assert.Empty(claimer.Settings.Rules);
+    }
+
+    /// <summary>A forced claim clears the pad's suspicion, so it is ready and unsuspected once it loses the seat.</summary>
+    [Fact]
+    public void ForceClaimClearsSuspicion()
+    {
+        PadClaimer claimer = new(PadClaimSettings.Empty);
+        PadScript script = Hold(ConnectedPad(0), 0, D, 1500, 1502)
+            .Call(2000, (pads, now) => pads.ForceClaim(0, now))
+            .Call(2500, (pads, now) => pads.ReleaseSeat(now));
+
+        script.Run(claimer);
+
+        DeviceSnapshot snapshot = Assert.Single(claimer.Devices);
+        Assert.Equal((DeviceStatus.Ready, SuspectReason.None), (snapshot.Status, snapshot.Reasons));
+        Assert.Empty(snapshot.SuspectButtons);
+    }
+
+    /// <summary>With unlisted pads accepted, a stray event from an index that disconnected does not admit it again.</summary>
+    [Fact]
+    public void StrayEventFromADisconnectedPadIsIgnored()
+    {
+        PadClaimer claimer = new(PadClaimSettings.Empty, new ClaimOptions(UnlistedDevices: UnlistedDevicePolicy.Accept));
+
+        IReadOnlyList<(TimeSpan At, ClaimEvent Event)> events = ConnectedPad(0).Disconnect(2000, 0).Press(2005, 0, A).Run(claimer);
+
+        Assert.Empty(At(events, 2005));
+        Assert.Empty(claimer.Devices);
+    }
+
+    /// <summary>Settings whose rules array was never initialised are refused at construction.</summary>
+    [Fact]
+    public void ClaimerRejectsDefaultRules()
+    {
+        ArgumentException thrown = Assert.Throws<ArgumentException>(() => new PadClaimer(new PadClaimSettings(default)));
+
+        Assert.Contains("Rules", thrown.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>A null rule is refused at construction.</summary>
+    [Fact]
+    public void ClaimerRejectsNullRule() => Assert.Throws<ArgumentException>(() => new PadClaimer(new PadClaimSettings([null!])));
+
+    /// <summary>A rule with no device is refused at construction.</summary>
+    [Fact]
+    public void ClaimerRejectsNullDevice()
+    {
+        ArgumentException thrown = Assert.Throws<ArgumentException>(() =>
+            new PadClaimer(new PadClaimSettings([new DeviceRule(null!, DeviceVerdict.Blocked, [])]))
+        );
+
+        Assert.Contains("device", thrown.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>A rule whose blocked buttons were never initialised is refused at construction.</summary>
+    [Fact]
+    public void ClaimerRejectsDefaultBlockedButtons()
+    {
+        ArgumentException thrown = Assert.Throws<ArgumentException>(() =>
+            new PadClaimer(new PadClaimSettings([new DeviceRule(Pad0, DeviceVerdict.None, default)]))
+        );
+
+        Assert.Contains("BlockedButtons", thrown.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>The claimer keeps each rule's blocked buttons distinct and sorted, so unblocking a button removes it.</summary>
+    [Fact]
+    public void ClaimerDeduplicatesBlockedButtons()
+    {
+        PadClaimer claimer = new(RuleFor(DeviceVerdict.None, 9, BlockedButton, 9, BlockedButton));
+
+        Assert.Equal<int>([BlockedButton, 9], Assert.Single(claimer.Settings.Rules).BlockedButtons);
+
+        claimer.SetButtonBlocked(Pad0, BlockedButton, blocked: false, Ms(0));
+
+        Assert.Equal<int>([9], Assert.Single(claimer.Settings.Rules).BlockedButtons);
+    }
+
+    /// <summary>Blocking buttons one by one keeps the rule's blocked buttons distinct and sorted.</summary>
+    [Fact]
+    public void BlockedButtonsStaySortedAfterSetButtonBlocked()
+    {
+        PadClaimer claimer = new(PadClaimSettings.Empty);
+
+        claimer.SetButtonBlocked(Pad0, BlockedButton, blocked: true, Ms(0));
+        claimer.SetButtonBlocked(Pad0, C, blocked: true, Ms(0));
+        claimer.SetButtonBlocked(Pad0, C, blocked: true, Ms(0));
+
+        Assert.Equal<int>([C, BlockedButton], Assert.Single(claimer.Settings.Rules).BlockedButtons);
+    }
+
+    /// <summary>Forcing a claim for the seat holder itself raises nothing.</summary>
+    [Fact]
+    public void ForceClaimOnTheHolderIsSilent()
+    {
+        PadClaimer claimer = new(PadClaimSettings.Empty);
+
+        IReadOnlyList<(TimeSpan At, ClaimEvent Event)> events = CleanClaim(ConnectedPad(0), 0, 1500)
+            .Call(2200, (pads, now) => pads.ForceClaim(0, now))
+            .Run(claimer);
+
+        Assert.Empty(At(events, 2200));
+        Assert.Equal(0, claimer.SeatDevice);
+        Assert.Equal(DeviceStatus.Claimed, StatusOf(claimer, 0));
+    }
+
+    /// <summary>A forced claim takes the seat from every state but Blocked.</summary>
+    /// <param name="state">The state the pad is in when the claim is forced.</param>
+    [Theory]
+    [InlineData(DeviceStatus.Settling)]
+    [InlineData(DeviceStatus.AwaitingConfirm)]
+    [InlineData(DeviceStatus.Suspect)]
+    [InlineData(DeviceStatus.NotAGamepad)]
+    public void ForceClaimFromEveryState(DeviceStatus state)
+    {
+        PadClaimer claimer = new(PadClaimSettings.Empty);
+        (PadScript script, int at) = state switch
+        {
+            DeviceStatus.Settling => (ConnectedPad(0), 500),
+            DeviceStatus.AwaitingConfirm => (Hold(ConnectedPad(0), 0, A, 1500, 1600), 1700),
+            DeviceStatus.Suspect => (Hold(ConnectedPad(0), 0, D, 1500, 1502), 1700),
+            DeviceStatus.NotAGamepad => (new PadScript().Connect(0, 0, NoButtons, Centred, isKnownGamepad: false), 1700),
+            _ => throw new ArgumentOutOfRangeException(nameof(state), state, "No script here reaches that state."),
+        };
+        script.Until(at).Run(claimer);
+        Assert.Equal(state, StatusOf(claimer, 0));
+
+        IReadOnlyList<ClaimEvent> forced = claimer.ForceClaim(0, Ms(at));
+
+        Assert.Equal(new SeatClaimed(0), Assert.Single(forced));
+        Assert.Equal(DeviceStatus.Claimed, StatusOf(claimer, 0));
+        Assert.Equal(0, claimer.SeatDevice);
+    }
+
+    /// <summary>Forgetting a holder that disconnected forgets it, so its return is not given the seat.</summary>
+    [Fact]
+    public void ForgetForgetsAnAwayHolder()
+    {
+        PadClaimer claimer = new(RuleFor(DeviceVerdict.None, BlockedButton));
+        PadScript script = CleanClaim(ConnectedPad(0), 0, 1500)
+            .Disconnect(3000, 0)
+            .Call(3200, (pads, now) => pads.Forget(Pad0, now))
+            .Connect(3500, 3, NoButtons, Centred, identity: Pad0)
+            .Until(4600);
+
+        IReadOnlyList<(TimeSpan At, ClaimEvent Event)> events = script.Run(claimer);
+
+        Assert.Empty(Of<SeatRestored>(events));
+        Assert.Null(claimer.SeatDevice);
+        Assert.Equal(DeviceStatus.Ready, StatusOf(claimer, 3));
+    }
+
+    /// <summary>Re-sampling a pad that is not suspect raises nothing.</summary>
+    [Fact]
+    public void ResampleOnAPadNotSuspectIsSilent()
+    {
+        PadClaimer claimer = new(PadClaimSettings.Empty);
+
+        IReadOnlyList<(TimeSpan At, ClaimEvent Event)> events = ConnectedPad(0).Call(1500, (pads, now) => pads.Resample(0, now)).Run(claimer);
+
+        Assert.Empty(At(events, 1500));
+        Assert.Equal(DeviceStatus.Ready, StatusOf(claimer, 0));
+    }
+
+    /// <summary>Unblocking a button that was never blocked raises nothing and adds no rule.</summary>
+    [Fact]
+    public void UnchangedButtonBlockIsSilent()
+    {
+        PadClaimer claimer = new(PadClaimSettings.Empty);
+
+        IReadOnlyList<(TimeSpan At, ClaimEvent Event)> events = ConnectedPad(0)
+            .Call(1500, (pads, now) => pads.SetButtonBlocked(Pad0, A, blocked: false, now))
+            .Run(claimer);
+
+        Assert.Empty(At(events, 1500));
+        Assert.Empty(claimer.Settings.Rules);
+    }
+
+    /// <summary>Forgetting a pad with no rule raises nothing.</summary>
+    [Fact]
+    public void ForgetWithoutARuleIsSilent()
+    {
+        PadClaimer claimer = new(PadClaimSettings.Empty);
+
+        IReadOnlyList<(TimeSpan At, ClaimEvent Event)> events = ConnectedPad(0).Call(1500, (pads, now) => pads.Forget(Pad0, now)).Run(claimer);
+
+        Assert.Empty(At(events, 1500));
+    }
+
+    /// <summary>With unlisted pads accepted, an unlisted pad whose identity is blocked is admitted blocked and cannot claim.</summary>
+    [Fact]
+    public void UnlistedPadMatchingABlockedRuleIsAdmittedBlocked()
+    {
+        PadClaimSettings settings = new([new DeviceRule(new DeviceIdentity(0, 0, "Unlisted 7", null), DeviceVerdict.Blocked, [])]);
+        PadClaimer claimer = new(settings, new ClaimOptions(UnlistedDevices: UnlistedDevicePolicy.Accept));
+
+        IReadOnlyList<(TimeSpan At, ClaimEvent Event)> events = Hold(Hold(new PadScript(), UnlistedPad, A, 100, 200), UnlistedPad, B, 400, 500)
+            .Run(claimer);
+
+        DeviceSnapshot added = Assert.Single(Of<DeviceAdded>(events)).Event.Snapshot;
+        Assert.Equal((DeviceStatus.Blocked, true), (added.Status, added.Unlisted));
+        Assert.Empty(Of<ClaimStarted>(events));
+        Assert.Null(claimer.SeatDevice);
+    }
+
+    /// <summary>A connect on an unlisted pad's index replaces it with a listed pad that settles.</summary>
+    [Fact]
+    public void ConnectReplacesAnUnlistedPad()
+    {
+        PadClaimer claimer = new(PadClaimSettings.Empty, new ClaimOptions(UnlistedDevices: UnlistedDevicePolicy.Accept));
+        PadScript script = new PadScript().Press(100, UnlistedPad, A).Connect(200, UnlistedPad, NoButtons, Centred);
+
+        IReadOnlyList<(TimeSpan At, ClaimEvent Event)> events = script.Run(claimer);
+
+        List<ClaimEvent> atConnect = At(events, 200);
+        Assert.Equal(2, atConnect.Count);
+        Assert.Equal(new DeviceRemoved(UnlistedPad), atConnect[0]);
+        DeviceSnapshot added = Assert.IsType<DeviceAdded>(atConnect[1]).Snapshot;
+        Assert.Equal((PadScript.IdentityOf(UnlistedPad), DeviceStatus.Settling, false), (added.Identity, added.Status, added.Unlisted));
+    }
+
+    /// <summary>Trusting a ready pad keeps it ready and reports the change of trust.</summary>
+    [Fact]
+    public void TrustingAReadyPadReportsTheChange()
+    {
+        PadClaimer claimer = new(PadClaimSettings.Empty);
+
+        IReadOnlyList<(TimeSpan At, ClaimEvent Event)> events = ConnectedPad(0)
+            .Call(1500, (pads, now) => pads.SetVerdict(Pad0, DeviceVerdict.Trusted, now))
+            .Run(claimer);
+
+        List<ClaimEvent> atTrust = At(events, 1500);
+        AssertChangedThenSaved(atTrust, DeviceStatus.Ready);
+        Assert.True(Assert.IsType<DeviceChanged>(atTrust[0]).Snapshot.Trusted);
+    }
+
+    /// <summary>Blocking a suspect pad clears its suspicion: the block, not the noise, now keeps it out.</summary>
+    [Fact]
+    public void BlockingASuspectPadClearsSuspicion()
+    {
+        PadClaimer claimer = new(PadClaimSettings.Empty);
+        PadScript script = Hold(ConnectedPad(0), 0, D, 1500, 1502).Call(2000, (pads, now) => pads.SetVerdict(Pad0, DeviceVerdict.Blocked, now));
+
+        IReadOnlyList<(TimeSpan At, ClaimEvent Event)> events = script.Run(claimer);
+
+        Assert.Contains(events, recorded => recorded.At == Ms(1502) && recorded.Event is DeviceChanged { Snapshot.Status: DeviceStatus.Suspect });
+        DeviceSnapshot blocked = Assert.IsType<DeviceChanged>(At(events, 2000)[0]).Snapshot;
+        Assert.Equal((DeviceStatus.Blocked, SuspectReason.None), (blocked.Status, blocked.Reasons));
+        Assert.Empty(blocked.SuspectButtons);
+    }
+
+    private static PadScript LayoutlessPadClaimsThenIsUntrusted() =>
+        CleanClaim(
+                new PadScript()
+                    .Connect(0, 0, NoButtons, Centred, isKnownGamepad: false)
+                    .Call(1500, (pads, now) => pads.SetVerdict(Pad0, DeviceVerdict.Trusted, now)),
+                0,
+                3000
+            )
+            .Call(4000, (pads, now) => pads.SetVerdict(Pad0, DeviceVerdict.None, now));
+
+    private static void AssertClaimedThenUntrusted(IReadOnlyList<(TimeSpan At, ClaimEvent Event)> events)
+    {
+        Assert.Contains(
+            events,
+            recorded => recorded.At == Ms(2500) && recorded.Event is DeviceChanged { Snapshot: { Device: 0, Status: DeviceStatus.Ready } }
+        );
+        Assert.Equal(Ms(3600), Assert.Single(Of<SeatClaimed>(events), claimed => claimed.Event.Device == 0).At);
+        DeviceSnapshot untrusted = Assert.IsType<DeviceChanged>(At(events, 4000)[0]).Snapshot;
+        Assert.Equal((0, DeviceStatus.Claimed, false), (untrusted.Device, untrusted.Status, untrusted.Trusted));
+    }
+
+    private static void AssertLostThenNotOffered(List<ClaimEvent> events, ClaimEvent loss)
+    {
+        Assert.Equal(2, events.Count);
+        Assert.Equal(loss, events[0]);
+        DeviceSnapshot after = Assert.IsType<DeviceChanged>(events[1]).Snapshot;
+        Assert.Equal((0, DeviceStatus.NotAGamepad), (after.Device, after.Status));
     }
 
     private static void AssertChangedThenSaved(List<ClaimEvent> events, DeviceStatus status)

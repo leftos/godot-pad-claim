@@ -28,6 +28,7 @@ public sealed class PadClaimer
     private readonly ClaimOptions options;
     private readonly ClaimTuning tuning;
     private readonly Dictionary<int, DeviceTracker> devices = [];
+    private readonly HashSet<int> everConnected = [];
     private readonly Seat seat;
     private PadClaimSettings settings;
     private int connects;
@@ -36,10 +37,14 @@ public sealed class PadClaimer
     /// <param name="settings">The player's decisions about pads.</param>
     /// <param name="options">How pads are admitted; the defaults when null.</param>
     /// <param name="tuning">The thresholds; <see cref="ClaimTuning.Default"/> when null.</param>
+    /// <exception cref="ArgumentException">
+    /// The settings' rules array is uninitialised, or a rule is null, has no device or has an uninitialised blocked-buttons
+    /// array.
+    /// </exception>
     public PadClaimer(PadClaimSettings settings, ClaimOptions? options = null, ClaimTuning? tuning = null)
     {
         ArgumentNullException.ThrowIfNull(settings);
-        this.settings = settings;
+        this.settings = Validated(settings);
         this.options = options ?? new ClaimOptions();
         this.tuning = tuning ?? ClaimTuning.Default;
         seat = new Seat(this.tuning);
@@ -88,6 +93,7 @@ public sealed class PadClaimer
             Remove(device, events);
         }
 
+        everConnected.Add(device);
         DeviceTracker tracker = new(device, identity, tuning, ++connects);
         tracker.Admit(RuleFor(identity), !isKnownGamepad && options.RequireKnownGamepad, buttonsDown, axes, now);
         devices[device] = tracker;
@@ -172,9 +178,15 @@ public sealed class PadClaimer
         return events;
     }
 
-    /// <summary>Vacates the seat at the host's request; the holder becomes ready and a holder that left is forgotten.</summary>
+    /// <summary>
+    /// Vacates the seat at the host's request: the holder becomes ready, or, without the gamepad layout the host requires
+    /// and without trust, goes to NotAGamepad; a holder that left is forgotten.
+    /// </summary>
     /// <param name="now">The time of the release.</param>
-    /// <returns>The events the release caused: the holder's seat loss, or none when the seat is vacant.</returns>
+    /// <returns>
+    /// The events the release caused: the holder's seat loss, then a DeviceChanged when it goes to NotAGamepad; none when
+    /// the seat is vacant.
+    /// </returns>
     public IReadOnlyList<ClaimEvent> ReleaseSeat(TimeSpan now)
     {
         List<ClaimEvent> events = [];
@@ -186,8 +198,9 @@ public sealed class PadClaimer
     /// <param name="device">The pad's device index.</param>
     /// <param name="now">The time of the request.</param>
     /// <returns>
-    /// SeatClaimed on a vacant seat or SeatMoved from the holder, which becomes ready; none for a pad not connected,
-    /// blocked or already holding the seat.
+    /// SeatClaimed on a vacant seat, or SeatMoved from the holder, which becomes ready or, without the gamepad layout the
+    /// host requires and without trust, goes to NotAGamepad with a DeviceChanged straight after; none for a pad not
+    /// connected, blocked or already holding the seat.
     /// </returns>
     public IReadOnlyList<ClaimEvent> ForceClaim(int device, TimeSpan now)
     {
@@ -245,7 +258,10 @@ public sealed class PadClaimer
         return Update(device, rule => rule with { BlockedButtons = WithButton(rule.BlockedButtons, button, blocked) }, now);
     }
 
-    /// <summary>Removes every rule for a pad, so it is treated by the noise checks alone, and applies it at once.</summary>
+    /// <summary>
+    /// Removes every rule for a pad and for each connected pad it matches, so none of them falls through to another
+    /// rule and each is treated by the noise checks alone, and applies it at once.
+    /// </summary>
     /// <param name="device">The pad's identity.</param>
     /// <param name="now">The time of the change.</param>
     /// <returns>The pads' changes, then SettingsChanged; none when no rule matched.</returns>
@@ -254,7 +270,8 @@ public sealed class PadClaimer
         ArgumentNullException.ThrowIfNull(device);
 
         seat.ForgetAwayHolder(device);
-        ImmutableArray<DeviceRule> kept = [.. settings.Rules.Where(rule => !rule.Device.Matches(device))];
+        List<DeviceIdentity> forgotten = [device, .. devices.Values.Select(tracker => tracker.Identity).Where(device.Matches)];
+        ImmutableArray<DeviceRule> kept = [.. settings.Rules.Where(rule => !forgotten.Any(rule.Device.Matches))];
         return kept.Length == settings.Rules.Length ? [] : Change(new PadClaimSettings(kept), now);
     }
 
@@ -286,7 +303,10 @@ public sealed class PadClaimer
 
     private DeviceRule? RuleFor(DeviceIdentity identity) => settings.Rules.FirstOrDefault(rule => rule.Device.Matches(identity));
 
-    /// <summary>Finds a connected pad, admitting one never seen to connect when the host accepts unlisted pads.</summary>
+    /// <summary>
+    /// Finds a connected pad, admitting one at an index never connected in this claimer's life when the host accepts
+    /// unlisted pads; a stray event from an index that disconnected is dropped.
+    /// </summary>
     private DeviceTracker? Find(int device, List<ClaimEvent> events)
     {
         if (devices.TryGetValue(device, out DeviceTracker? tracker))
@@ -294,7 +314,7 @@ public sealed class PadClaimer
             return tracker;
         }
 
-        if (options.UnlistedDevices != UnlistedDevicePolicy.Accept)
+        if (options.UnlistedDevices != UnlistedDevicePolicy.Accept || !everConnected.Add(device))
         {
             return null;
         }
@@ -307,6 +327,30 @@ public sealed class PadClaimer
         return tracker;
     }
 
+    /// <summary>Checks the settings a host passes in and keeps each rule's blocked buttons distinct and sorted.</summary>
+    private static PadClaimSettings Validated(PadClaimSettings settings)
+    {
+        if (settings.Rules.IsDefault)
+        {
+            throw new ArgumentException("The settings' Rules array is uninitialised (default); use an empty array for no rules.", nameof(settings));
+        }
+
+        if (settings.Rules.Any(rule => rule?.Device is null))
+        {
+            throw new ArgumentException("A rule in the settings is null or has a null device; every rule must name its device.", nameof(settings));
+        }
+
+        if (settings.Rules.Any(rule => rule.BlockedButtons.IsDefault))
+        {
+            throw new ArgumentException(
+                "A rule's BlockedButtons array is uninitialised (default); use an empty array for no blocked buttons.",
+                nameof(settings)
+            );
+        }
+
+        return new PadClaimSettings([.. settings.Rules.Select(rule => rule with { BlockedButtons = [.. rule.BlockedButtons.Distinct().Order()] })]);
+    }
+
     private static ImmutableArray<int> WithButton(ImmutableArray<int> buttons, int button, bool blocked)
     {
         if (buttons.Contains(button) == blocked)
@@ -314,7 +358,7 @@ public sealed class PadClaimer
             return buttons;
         }
 
-        return blocked ? buttons.Add(button) : buttons.Remove(button);
+        return blocked ? buttons.Add(button).Sort() : buttons.Remove(button);
     }
 
     private int IndexOfRule(DeviceIdentity identity)
@@ -348,10 +392,18 @@ public sealed class PadClaimer
         return Change(new PadClaimSettings(rules), now);
     }
 
-    /// <summary>Takes the new settings and applies each connected pad's rule to it, in ascending device index.</summary>
+    /// <summary>
+    /// Takes the new settings, forgets a holder that left when its own rule is now a block, and applies each connected
+    /// pad's rule to it, in ascending device index.
+    /// </summary>
     private List<ClaimEvent> Change(PadClaimSettings changed, TimeSpan now)
     {
         settings = changed;
+        if (seat.AwayHolder is { } away && RuleFor(away)?.Verdict == DeviceVerdict.Blocked)
+        {
+            seat.ForgetAwayHolder(away);
+        }
+
         List<ClaimEvent> events = [];
         foreach (DeviceTracker tracker in Ordered())
         {
@@ -362,6 +414,7 @@ public sealed class PadClaimer
             }
 
             tracker.ApplyRule(rule, now, events);
+            seat.ButtonsBlocked(tracker);
         }
 
         events.Add(new SettingsChanged(settings));

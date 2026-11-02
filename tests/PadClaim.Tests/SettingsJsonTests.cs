@@ -97,6 +97,21 @@ public sealed class SettingsJsonTests
         Assert.True(rule.BlockedButtons.IsEmpty);
     }
 
+    /// <summary>Blocked buttons read back distinct and in ascending order.</summary>
+    [Fact]
+    public void ReadDeduplicatesAndSortsBlockedButtons()
+    {
+        const string json = """
+            {"schemaVersion":1,"rules":[{"device":{"vendorId":1118,"productId":654,"name":"Pad"},"verdict":"None","blockedButtons":[9,7,9]}]}
+            """;
+
+        bool read = PadClaimSettingsJson.TryRead(json, out PadClaimSettings? settings, out string? error);
+
+        Assert.True(read, error);
+        Assert.NotNull(settings);
+        Assert.Equal<int>([7, 9], Assert.Single(settings.Rules).BlockedButtons);
+    }
+
     /// <summary>A null entry in the rules array is refused rather than thrown.</summary>
     [Fact]
     public void RejectsNullRule()

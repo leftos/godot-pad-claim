@@ -19,6 +19,9 @@ internal sealed class Seat(ClaimTuning tuning)
     /// <summary>Gets or sets whether a completed gesture may take the seat.</summary>
     public bool ClaimsOpen { get; set; } = true;
 
+    /// <summary>Gets the identity of the holder that disconnected and may get the seat back, or null when there is none.</summary>
+    public DeviceIdentity? AwayHolder => awayHolder;
+
     /// <summary>Decides a completed gesture: the seat is taken when vacant or when its holder is idle, else refused.</summary>
     /// <param name="claimant">The pad that completed the gesture.</param>
     /// <param name="now">The time of the confirm release.</param>
@@ -44,7 +47,10 @@ internal sealed class Seat(ClaimTuning tuning)
         }
     }
 
-    /// <summary>Gives the seat to a pad unconditionally, at the host's request; a former holder becomes ready.</summary>
+    /// <summary>
+    /// Gives the seat to a pad unconditionally, at the host's request; a former holder becomes ready or, without the
+    /// gamepad layout the host requires and without trust, goes to NotAGamepad.
+    /// </summary>
     /// <param name="claimant">The pad that takes the seat; not the holder.</param>
     /// <param name="now">The time of the request.</param>
     /// <param name="events">The events the claim causes, appended in order.</param>
@@ -73,6 +79,16 @@ internal sealed class Seat(ClaimTuning tuning)
 
         Vacate();
         events.Add(new SeatLost(blocked.Device, SeatLossReason.Blocked));
+    }
+
+    /// <summary>Takes a pad's changed rule: a holder's blocked button is no longer held through the claim, as its release is dropped.</summary>
+    /// <param name="changed">The pad whose rule changed.</param>
+    public void ButtonsBlocked(DeviceTracker changed)
+    {
+        if (holder == changed)
+        {
+            heldThroughClaim.RemoveWhere(changed.BlocksButton);
+        }
     }
 
     /// <summary>Takes a button change: the holder's every press and release is activity, and a release frees its button.</summary>
@@ -175,6 +191,7 @@ internal sealed class Seat(ClaimTuning tuning)
         former.LoseSeat(now);
         Vacate();
         events.Add(new SeatLost(former.Device, SeatLossReason.Released));
+        ReportNotOffered(former, events);
     }
 
     /// <summary>Tells whether a button reaches the game: the holder's, unless it was held through the claim.</summary>
@@ -194,11 +211,21 @@ internal sealed class Seat(ClaimTuning tuning)
         events.Add(new ClaimRefused(claimant.Device, reason));
     }
 
+    /// <summary>Reports a former holder that is not offered rather than ready, which the seat loss alone does not tell.</summary>
+    private static void ReportNotOffered(DeviceTracker former, List<ClaimEvent> events)
+    {
+        if (former.Status == DeviceStatus.NotAGamepad)
+        {
+            events.Add(new DeviceChanged(former.Snapshot()));
+        }
+    }
+
     private void Move(DeviceTracker former, DeviceTracker claimant, TimeSpan now, List<ClaimEvent> events)
     {
         former.LoseSeat(now);
         Take(claimant, now);
         events.Add(new SeatMoved(former.Device, claimant.Device));
+        ReportNotOffered(former, events);
     }
 
     private void Take(DeviceTracker claimant, TimeSpan now)

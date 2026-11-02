@@ -130,7 +130,10 @@ public sealed record DeviceRemoved(int Device) : ClaimEvent;
 /// <param name="FirstButton">The button that started the claim.</param>
 public sealed record ClaimStarted(int Device, int FirstButton) : ClaimEvent;
 
-/// <summary>A started claim ended without a claim attempt.</summary>
+/// <summary>
+/// A started claim ended without a claim attempt. A DeviceChanged out of AwaitingConfirm, to Blocked or NotAGamepad, also
+/// ends a started claim, with no ClaimCancelled.
+/// </summary>
 /// <param name="Device">The pad's device index.</param>
 /// <param name="Reason">Why the claim ended.</param>
 public sealed record ClaimCancelled(int Device, CancelReason Reason) : ClaimEvent;
@@ -139,7 +142,11 @@ public sealed record ClaimCancelled(int Device, CancelReason Reason) : ClaimEven
 /// <param name="Device">The pad's device index.</param>
 public sealed record SeatClaimed(int Device) : ClaimEvent;
 
-/// <summary>A pad took the seat from a holder that had been idle for the steal time; the former holder is ready again.</summary>
+/// <summary>
+/// A pad took the seat from a holder that had been idle for the steal time, or by a forced claim. The former holder is
+/// ready again, or, without the gamepad layout the host requires and without trust, goes to NotAGamepad, reported by a
+/// DeviceChanged straight after this event.
+/// </summary>
 /// <param name="From">The former holder's device index.</param>
 /// <param name="To">The new holder's device index.</param>
 public sealed record SeatMoved(int From, int To) : ClaimEvent;

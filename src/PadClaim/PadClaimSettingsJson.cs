@@ -106,7 +106,7 @@ public static class PadClaimSettingsJson
 
     private static DeviceRule FromDocument(RuleDocument rule)
     {
-        ImmutableArray<int> blocked = rule.BlockedButtons is null ? [] : [.. rule.BlockedButtons];
+        ImmutableArray<int> blocked = rule.BlockedButtons is null ? [] : [.. rule.BlockedButtons.Distinct().Order()];
         DeviceIdentity device = string.IsNullOrEmpty(rule.Device.Serial) ? rule.Device with { Serial = null } : rule.Device;
         return new DeviceRule(device, rule.Verdict, blocked);
     }

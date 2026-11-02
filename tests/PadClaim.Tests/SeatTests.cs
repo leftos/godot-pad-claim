@@ -12,6 +12,7 @@ public sealed class SeatTests
     private const int A = 0;
     private const int B = 1;
     private const int C = 2;
+    private const int BlockedButton = 7;
 
     private static readonly int[] NoButtons = [];
     private static readonly float[] Centred = [0f, 0f, 0f, 0f, 0f, 0f];
@@ -289,6 +290,38 @@ public sealed class SeatTests
         (TimeSpan At, SeatMoved Event) moved = Assert.Single(Of<SeatMoved>(events));
         Assert.Equal((Ms(4000), 1, 0), (moved.At, moved.Event.From, moved.Event.To));
         Assert.Equal(Ms(1600), Assert.Single(Of<ClaimStarted>(events), started => started.Event.Device == 1).At);
+        Assert.DoesNotContain(Of<DeviceChanged>(events), changed => changed.Event.Snapshot is { Device: 1, Status: DeviceStatus.Suspect });
+        Assert.Equal(DeviceStatus.Ready, StatusOf(claimer, 1));
+    }
+
+    /// <summary>A holder's button held through the claim, blocked and then unblocked, reaches the game when pressed again.</summary>
+    [Fact]
+    public void BlockingAButtonHeldThroughTheClaimFreesIt()
+    {
+        PadClaimer claimer = new(PadClaimSettings.Empty);
+        DeviceIdentity pad = PadScript.IdentityOf(0);
+        PadScript script = Hold(Hold(ConnectedPad(0), 0, A, 1500, 1600).Press(1700, 0, C), 0, B, 1800, 1900)
+            .Call(2000, (pads, now) => pads.SetButtonBlocked(pad, C, blocked: true, now))
+            .Release(2100, 0, C)
+            .Call(2200, (pads, now) => pads.SetButtonBlocked(pad, C, blocked: false, now))
+            .Press(2300, 0, C);
+
+        script.Run(claimer);
+
+        Assert.Equal(0, claimer.SeatDevice);
+        Assert.True(claimer.AcceptsButton(0, C));
+    }
+
+    /// <summary>The holder's blocked button is dropped before the seat sees it, so pressing it does not keep the holder active.</summary>
+    [Fact]
+    public void HolderBlockedButtonIsNotActivity()
+    {
+        PadClaimer claimer = new(new PadClaimSettings([new DeviceRule(PadScript.IdentityOf(1), DeviceVerdict.None, [BlockedButton])]));
+
+        IReadOnlyList<(TimeSpan At, ClaimEvent Event)> events = PadOneClaimsThenPadZeroGestures(TwoPads().Press(4200, 1, BlockedButton)).Run(claimer);
+
+        (TimeSpan At, SeatMoved Event) moved = Assert.Single(Of<SeatMoved>(events));
+        Assert.Equal((Ms(4400), 1, 0), (moved.At, moved.Event.From, moved.Event.To));
     }
 
     /// <summary>A holder whose stick moves within the steal time keeps the seat.</summary>

@@ -44,7 +44,8 @@ internal sealed class DeviceTracker(int device, DeviceIdentity identity, ClaimTu
 
     /// <summary>
     /// Admits the pad as it connected: blocked when its rule blocks it, not offered when it lacks a gamepad layout the
-    /// host requires and is not trusted, else settling from the state the engine reported.
+    /// host requires and is not trusted, else settling. The state the engine reported is kept in every case, so a pad
+    /// unblocked or trusted later settles from its real buttons and axes.
     /// </summary>
     /// <param name="rule">The player's rule for the pad, or null when there is none.</param>
     /// <param name="layoutMissing">Whether the pad has no gamepad layout and the host requires one.</param>
@@ -55,17 +56,18 @@ internal sealed class DeviceTracker(int device, DeviceIdentity identity, ClaimTu
     {
         lacksLayout = layoutMissing;
         UseRule(rule);
+        RecordConnectState(buttonsDown, axisValues, now);
         if (rule?.Verdict == DeviceVerdict.Blocked)
         {
             status = DeviceStatus.Blocked;
         }
-        else if (lacksLayout && !trusted)
+        else if (NotOffered)
         {
             status = DeviceStatus.NotAGamepad;
         }
         else
         {
-            StartSettling(buttonsDown, axisValues, now);
+            StartSettling(now);
         }
     }
 
@@ -93,6 +95,8 @@ internal sealed class DeviceTracker(int device, DeviceIdentity identity, ClaimTu
         if (rule?.Verdict == DeviceVerdict.Blocked)
         {
             status = DeviceStatus.Blocked;
+            reasons = SuspectReason.None;
+            suspectButtons.Clear();
         }
         else if (ReturnsToNotAGamepad(before, wasTrusted))
         {
@@ -243,21 +247,27 @@ internal sealed class DeviceTracker(int device, DeviceIdentity identity, ClaimTu
         }
     }
 
-    /// <summary>Records that the completed gesture took the seat.</summary>
-    public void TakeSeat() => status = DeviceStatus.Claimed;
+    /// <summary>Records that the pad took the seat; a pad forced into it from suspect is no longer suspected.</summary>
+    public void TakeSeat()
+    {
+        status = DeviceStatus.Claimed;
+        reasons = SuspectReason.None;
+        suspectButtons.Clear();
+    }
 
     /// <summary>Records that the completed gesture was refused the seat.</summary>
     public void RefuseSeat() => status = DeviceStatus.Ready;
 
     /// <summary>
-    /// Records that the pad no longer holds the seat; it may claim again. A button still down is treated as one held at
-    /// connect: its hold counts from now and its release is exempt from the sub-human check, since it began while the
-    /// detectors were off.
+    /// Records that the pad no longer holds the seat; it may claim again, unless it lacks a gamepad layout the host
+    /// requires and is not trusted, when it is not offered. A button still down is treated as one held at connect: its
+    /// hold counts from now and its release is exempt from the sub-human check, since it began while the detectors were
+    /// off.
     /// </summary>
     /// <param name="now">The time the seat was lost.</param>
     public void LoseSeat(TimeSpan now)
     {
-        status = DeviceStatus.Ready;
+        status = NotOffered ? DeviceStatus.NotAGamepad : DeviceStatus.Ready;
         foreach (int button in pressedAt.Keys.ToList())
         {
             pressedAt[button] = now;
@@ -274,14 +284,15 @@ internal sealed class DeviceTracker(int device, DeviceIdentity identity, ClaimTu
     /// <summary>Gets whether a detector firing moves the pad to suspect: only from the states the gesture passes through.</summary>
     private bool CanTurnSuspect => status is DeviceStatus.Settling or DeviceStatus.Ready or DeviceStatus.AwaitingConfirm or DeviceStatus.Suspect;
 
+    /// <summary>Gets whether the pad lacks a gamepad layout the host requires and the player has not trusted it.</summary>
+    private bool NotOffered => lacksLayout && !trusted;
+
     /// <summary>
     /// Gets whether a rule change sends a pad without a gamepad layout the host requires back to not being offered: on
     /// leaving the block, or on losing trust while not holding the seat.
     /// </summary>
     private bool ReturnsToNotAGamepad(DeviceStatus before, bool wasTrusted) =>
-        lacksLayout
-        && !trusted
-        && (before == DeviceStatus.Blocked || (wasTrusted && before is not (DeviceStatus.Claimed or DeviceStatus.NotAGamepad)));
+        NotOffered && (before == DeviceStatus.Blocked || (wasTrusted && before is not (DeviceStatus.Claimed or DeviceStatus.NotAGamepad)));
 
     /// <summary>Gets whether a rule change from <paramref name="before"/> sends the pad back to settling.</summary>
     private bool LeavesQuarantine(DeviceStatus before) =>
@@ -304,11 +315,16 @@ internal sealed class DeviceTracker(int device, DeviceIdentity identity, ClaimTu
         }
     }
 
-    private void StartSettling(IReadOnlyList<int> buttonsDown, IReadOnlyList<float> axisValues, TimeSpan now)
+    private void StartSettling(TimeSpan now)
     {
         status = DeviceStatus.Settling;
         settleStart = now;
         stillSince = now;
+    }
+
+    /// <summary>Keeps the buttons down at connect, but for the blocked ones, and every axis's value, not yet known.</summary>
+    private void RecordConnectState(IReadOnlyList<int> buttonsDown, IReadOnlyList<float> axisValues, TimeSpan now)
+    {
         foreach (int button in buttonsDown.Where(button => !BlocksButton(button)))
         {
             pressedAt[button] = now;
