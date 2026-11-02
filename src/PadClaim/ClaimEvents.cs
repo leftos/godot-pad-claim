@@ -142,6 +142,15 @@ public sealed record ClaimCancelled(int Device, CancelReason Reason) : ClaimEven
 /// <param name="Device">The pad's device index.</param>
 public sealed record SeatClaimed(int Device) : ClaimEvent;
 
+/// <summary>A pad took the seat from a holder that had been idle for the steal time; the former holder is ready again.</summary>
+/// <param name="From">The former holder's device index.</param>
+/// <param name="To">The new holder's device index.</param>
+public sealed record SeatMoved(int From, int To) : ClaimEvent;
+
+/// <summary>The seat holder that disconnected came back and, once settled, got the vacant seat back by itself.</summary>
+/// <param name="Device">The returning pad's new device index.</param>
+public sealed record SeatRestored(int Device) : ClaimEvent;
+
 /// <summary>A pad completed the gesture but did not get the seat.</summary>
 /// <param name="Device">The pad's device index.</param>
 /// <param name="Reason">Why the seat was refused.</param>

@@ -24,8 +24,14 @@ internal sealed class DeviceTracker(int device, DeviceIdentity identity, ClaimTu
     /// <summary>Gets the engine's device index for this connection.</summary>
     public int Device => device;
 
+    /// <summary>Gets who the pad is.</summary>
+    public DeviceIdentity Identity => identity;
+
     /// <summary>Gets where the pad stands in the claim process.</summary>
     public DeviceStatus Status => status;
+
+    /// <summary>Gets the buttons down now.</summary>
+    public IReadOnlyCollection<int> ButtonsDown => pressedAt.Keys;
 
     /// <summary>Marks the device as one the claimer never offers, because it has no gamepad layout.</summary>
     public void MarkNotAGamepad() => status = DeviceStatus.NotAGamepad;
@@ -90,9 +96,18 @@ internal sealed class DeviceTracker(int device, DeviceIdentity identity, ClaimTu
     /// <param name="axis">The axis index.</param>
     /// <param name="value">The axis's new value.</param>
     /// <param name="now">The time of the value.</param>
-    public void Axis(int axis, float value, TimeSpan now)
+    /// <returns>
+    /// True when the value is activity: beyond the axis's rest ± <see cref="ClaimTuning.AxisStillBand"/>, or, for an axis
+    /// without a known rest, any change.
+    /// </returns>
+    public bool Axis(int axis, float value, TimeSpan now)
     {
-        if (!axes.TryGetValue(axis, out AxisSample? sample))
+        float? previous = null;
+        if (axes.TryGetValue(axis, out AxisSample? sample))
+        {
+            previous = sample.Value;
+        }
+        else
         {
             sample = new AxisSample(value, known: true);
             axes[axis] = sample;
@@ -100,11 +115,17 @@ internal sealed class DeviceTracker(int device, DeviceIdentity identity, ClaimTu
 
         sample.Value = value;
         sample.Known = true;
-        if (status != DeviceStatus.Settling)
+        if (status == DeviceStatus.Settling)
         {
-            return;
+            SettleAxis(sample, value, now);
         }
 
+        return IsAxisActivity(axis, value, previous);
+    }
+
+    /// <summary>While the pad settles, restarts the quiet window on an axis leaving its reference, else widens its spread.</summary>
+    private void SettleAxis(AxisSample sample, float value, TimeSpan now)
+    {
         float offset = MathF.Abs(value - sample.Reference);
         if (offset > tuning.AxisStillBand)
         {
@@ -153,6 +174,9 @@ internal sealed class DeviceTracker(int device, DeviceIdentity identity, ClaimTu
 
     /// <summary>Records that the completed gesture was refused the seat.</summary>
     public void RefuseSeat() => status = DeviceStatus.Ready;
+
+    /// <summary>Records that the pad no longer holds the seat; it may claim again.</summary>
+    public void LoseSeat() => status = DeviceStatus.Ready;
 
     /// <summary>
     /// Gets whether the noise detectors judge this pad: every pad but the seat holder, whose own player may hold and mash
@@ -329,6 +353,9 @@ internal sealed class DeviceTracker(int device, DeviceIdentity identity, ClaimTu
             sample.Spread = 0f;
         }
     }
+
+    private bool IsAxisActivity(int axis, float value, float? previous) =>
+        rests.TryGetValue(axis, out AxisRest? rest) && rest.Known ? MathF.Abs(value - rest.Centre) > tuning.AxisStillBand : previous != value;
 
     private bool IsHumanHold(TimeSpan hold) => hold >= tuning.MinClaimHold && hold <= tuning.MaxClaimHold;
 

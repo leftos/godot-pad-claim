@@ -26,7 +26,7 @@ public sealed class PadClaimer
     private readonly ClaimOptions options;
     private readonly ClaimTuning tuning;
     private readonly Dictionary<int, DeviceTracker> devices = [];
-    private int? seat;
+    private readonly Seat seat;
 
     /// <summary>Creates a claimer with no pads connected and the seat vacant.</summary>
     /// <param name="settings">The player's decisions about pads.</param>
@@ -37,13 +37,21 @@ public sealed class PadClaimer
         ArgumentNullException.ThrowIfNull(settings);
         this.options = options ?? new ClaimOptions();
         this.tuning = tuning ?? ClaimTuning.Default;
+        seat = new Seat(this.tuning);
     }
 
     /// <summary>Gets every connected pad, in ascending device index.</summary>
     public IReadOnlyList<DeviceSnapshot> Devices => [.. Ordered().Select(tracker => tracker.Snapshot())];
 
     /// <summary>Gets the device index of the seat holder, or null when the seat is vacant.</summary>
-    public int? SeatDevice => seat;
+    public int? SeatDevice => seat.Device;
+
+    /// <summary>Gets or sets whether a completed gesture may take the seat; true by default.</summary>
+    public bool ClaimsOpen
+    {
+        get => seat.ClaimsOpen;
+        set => seat.ClaimsOpen = value;
+    }
 
     /// <summary>Takes a pad's connection. A device index already connected is disconnected first.</summary>
     /// <param name="device">The engine's device index for this connection.</param>
@@ -112,9 +120,15 @@ public sealed class PadClaimer
     public IReadOnlyList<ClaimEvent> Button(int device, int button, bool pressed, TimeSpan now)
     {
         List<ClaimEvent> events = [];
-        if (devices.TryGetValue(device, out DeviceTracker? tracker) && tracker.Button(button, pressed, now, events))
+        if (!devices.TryGetValue(device, out DeviceTracker? tracker))
         {
-            DecideSeat(tracker, events);
+            return events;
+        }
+
+        seat.NoteButton(device, button, pressed, now);
+        if (tracker.Button(button, pressed, now, events))
+        {
+            seat.Attempt(tracker, now, events);
         }
 
         return events;
@@ -128,9 +142,9 @@ public sealed class PadClaimer
     /// <returns>The events the value caused, in order.</returns>
     public IReadOnlyList<ClaimEvent> Axis(int device, int axis, float value, TimeSpan now)
     {
-        if (devices.TryGetValue(device, out DeviceTracker? tracker))
+        if (devices.TryGetValue(device, out DeviceTracker? tracker) && tracker.Axis(axis, value, now))
         {
-            tracker.Axis(axis, value, now);
+            seat.NoteAxisActivity(device, now);
         }
 
         return [];
@@ -144,11 +158,44 @@ public sealed class PadClaimer
         List<ClaimEvent> events = [];
         foreach (DeviceTracker tracker in Ordered())
         {
+            bool settling = tracker.Status == DeviceStatus.Settling;
             tracker.Tick(now, events);
+            if (settling && tracker.Status == DeviceStatus.Ready)
+            {
+                seat.TryRestore(tracker, devices.Values, now, events);
+            }
         }
 
         return events;
     }
+
+    /// <summary>Vacates the seat at the host's request; the holder becomes ready and a holder that left is forgotten.</summary>
+    /// <param name="now">The time of the release.</param>
+    /// <returns>The events the release caused: the holder's seat loss, or none when the seat is vacant.</returns>
+    [SuppressMessage("Style", "IDE0060:Remove unused parameter", Justification = "Every host operation takes the time it happens.")]
+    public IReadOnlyList<ClaimEvent> ReleaseSeat(TimeSpan now)
+    {
+        List<ClaimEvent> events = [];
+        seat.Release(events);
+        return events;
+    }
+
+    /// <summary>Tells whether a button press or release reaches the game.</summary>
+    /// <param name="device">The pad's device index.</param>
+    /// <param name="button">The button index.</param>
+    /// <returns>True for the seat device's buttons, except one held through the claim until its release.</returns>
+    public bool AcceptsButton(int device, int button) => seat.AcceptsButton(device, button);
+
+    /// <summary>Tells whether an axis value reaches the game.</summary>
+    /// <param name="device">The pad's device index.</param>
+    /// <param name="axis">The axis index.</param>
+    /// <returns>True for the seat device's axes only.</returns>
+    [SuppressMessage(
+        "Style",
+        "IDE0060:Remove unused parameter",
+        Justification = "The host asks per axis; every axis of the seat device is accepted."
+    )]
+    public bool AcceptsAxis(int device, int axis) => seat.AcceptsAxes(device);
 
     /// <summary>Gets where an axis rested while the pad settled, for shaping its values.</summary>
     /// <param name="device">The pad's device index.</param>
@@ -158,28 +205,12 @@ public sealed class PadClaimer
 
     private List<DeviceTracker> Ordered() => [.. devices.Values.OrderBy(tracker => tracker.Device)];
 
-    private void DecideSeat(DeviceTracker tracker, List<ClaimEvent> events)
-    {
-        if (seat is null)
-        {
-            seat = tracker.Device;
-            tracker.TakeSeat();
-            events.Add(new SeatClaimed(tracker.Device));
-            return;
-        }
-
-        tracker.RefuseSeat();
-        events.Add(new ClaimRefused(tracker.Device, RefuseReason.SeatBusy));
-    }
-
     private void Remove(int device, List<ClaimEvent> events)
     {
-        devices.Remove(device, out DeviceTracker? tracker);
-        tracker?.Disconnect(events);
-        if (seat == device)
+        if (devices.Remove(device, out DeviceTracker? tracker))
         {
-            seat = null;
-            events.Add(new SeatLost(device, SeatLossReason.Disconnected));
+            tracker.Disconnect(events);
+            seat.Removed(tracker, events);
         }
 
         events.Add(new DeviceRemoved(device));
