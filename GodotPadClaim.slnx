@@ -1,6 +1,7 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/PadClaim/PadClaim.csproj" />
+    <Project Path="src/PadClaim.GodotInput/PadClaim.GodotInput.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/PadClaim.Tests/PadClaim.Tests.csproj" />
