@@ -8,10 +8,10 @@ A library that decides which gamepad a player has claimed. Layers: `PadClaim` (a
 
 | Task | Files, in order | Deep doc |
 |---|---|---|
-| Change a threshold (quiet window, hold range, confirm window, repeat detection) | `src/PadClaim/ClaimTuning.cs` → `tests/PadClaim.Tests/ClaimGestureTests.cs` (planned), `NoiseTests.cs` (planned) | none yet |
+| Change a threshold (quiet window, hold range, confirm window, repeat detection) | `src/PadClaim/ClaimTuning.cs` → `tests/PadClaim.Tests/ClaimGestureTests.cs`, `NoiseTests.cs` (planned) | none yet |
 | Change how two connections of a device are matched | `src/PadClaim/DeviceIdentity.cs` → `tests/PadClaim.Tests/IdentityTests.cs` | none yet |
 | Change the settings file format | `src/PadClaim/PadClaimSettingsJson.cs` → `tests/PadClaim.Tests/SettingsJsonTests.cs` | none yet |
-| Change the claim gesture | `src/PadClaim/DeviceTracker.cs` (planned) → `src/PadClaim/PadClaimer.cs` (planned) → `tests/PadClaim.Tests/ClaimGestureTests.cs` (planned) | none yet |
+| Change the claim gesture | `src/PadClaim/DeviceTracker.cs` → `src/PadClaim/PadClaimer.cs` → `tests/PadClaim.Tests/ClaimGestureTests.cs` | none yet |
 
 ## Layers
 
