@@ -7,3 +7,4 @@ All notable changes to this project are documented in this file. The format is b
 - Repository skeleton: an engine-free core project, its tests and the build, test and format scripts.
 - Device identity from Godot's joypad info, per-device verdicts and blocked buttons, and the JSON format the host saves them in.
 - A two-button claim gesture: a pad claims the seat by releasing one button, then pressing a different one within 3 s and releasing it.
+- Noise detection: an unclaimed pad with a stuck, self-repeating or instantly toggling button, or an axis that never settles, becomes suspect and cannot claim.

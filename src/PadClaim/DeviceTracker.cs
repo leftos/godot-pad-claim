@@ -1,6 +1,9 @@
 namespace PadClaim;
 
-/// <summary>One connected pad's claim state: the quiet window, the buttons down, the axis rests and the gesture.</summary>
+/// <summary>
+/// One connected pad's claim state: the quiet window, the buttons down, the axis rests, the gesture and the noise that
+/// made it suspect.
+/// </summary>
 /// <param name="device">The engine's device index for this connection.</param>
 /// <param name="identity">Who the pad is.</param>
 /// <param name="tuning">The thresholds to measure against.</param>
@@ -8,8 +11,12 @@ internal sealed class DeviceTracker(int device, DeviceIdentity identity, ClaimTu
 {
     private readonly Dictionary<int, TimeSpan> pressedAt = [];
     private readonly Dictionary<int, AxisSample> axes = [];
+    private readonly NoiseDetector noise = new(tuning);
+    private readonly SortedSet<int> suspectButtons = [];
     private Dictionary<int, AxisRest> rests = [];
     private DeviceStatus status = DeviceStatus.Settling;
+    private SuspectReason reasons;
+    private TimeSpan settleStart;
     private TimeSpan stillSince;
     private int firstButton;
     private TimeSpan releasedAt;
@@ -30,6 +37,7 @@ internal sealed class DeviceTracker(int device, DeviceIdentity identity, ClaimTu
     public void StartSettling(IReadOnlyList<int> buttonsDown, IReadOnlyList<float> axisValues, TimeSpan now)
     {
         status = DeviceStatus.Settling;
+        settleStart = now;
         stillSince = now;
         foreach (int button in buttonsDown)
         {
@@ -44,7 +52,7 @@ internal sealed class DeviceTracker(int device, DeviceIdentity identity, ClaimTu
 
     /// <summary>Gets the pad as the host sees it.</summary>
     /// <returns>The pad's snapshot.</returns>
-    public DeviceSnapshot Snapshot() => new(device, identity, status, SuspectReason.None, [], Trusted: false, Unlisted: false);
+    public DeviceSnapshot Snapshot() => new(device, identity, status, reasons, [.. suspectButtons], Trusted: false, Unlisted: false);
 
     /// <summary>Gets where an axis rested in the quiet window.</summary>
     /// <param name="axis">The axis index.</param>
@@ -61,11 +69,21 @@ internal sealed class DeviceTracker(int device, DeviceIdentity identity, ClaimTu
     {
         if (pressed)
         {
-            Press(button, now);
+            Press(button, now, events);
             return false;
         }
 
-        return pressedAt.Remove(button, out TimeSpan downAt) && Release(button, downAt, now, events);
+        if (!pressedAt.Remove(button, out TimeSpan downAt))
+        {
+            return false;
+        }
+
+        if (DetectorsApply && noise.IsSubHuman(now - downAt))
+        {
+            Suspect(SuspectReason.SubHumanToggle, [button], events);
+        }
+
+        return Release(button, downAt, now, events);
     }
 
     /// <summary>Takes an axis value. Axes only ever delay a claim, by restarting the quiet window.</summary>
@@ -90,6 +108,11 @@ internal sealed class DeviceTracker(int device, DeviceIdentity identity, ClaimTu
         float offset = MathF.Abs(value - sample.Reference);
         if (offset > tuning.AxisStillBand)
         {
+            if (DetectorsApply)
+            {
+                noise.NoteAxisRestart();
+            }
+
             RestartQuietWindow(now);
             return;
         }
@@ -97,7 +120,7 @@ internal sealed class DeviceTracker(int device, DeviceIdentity identity, ClaimTu
         sample.Spread = MathF.Max(sample.Spread, offset);
     }
 
-    /// <summary>Lets time pass: the quiet window may end, or the confirm window may run out.</summary>
+    /// <summary>Lets time pass: the quiet window may end, a button may count as stuck, or the confirm window may run out.</summary>
     /// <param name="now">The current time.</param>
     /// <param name="events">The events the passing time causes, appended in order.</param>
     public void Tick(TimeSpan now, List<ClaimEvent> events)
@@ -105,8 +128,11 @@ internal sealed class DeviceTracker(int device, DeviceIdentity identity, ClaimTu
         if (status == DeviceStatus.Settling)
         {
             SettleIfStill(now, events);
+            return;
         }
-        else if (status == DeviceStatus.AwaitingConfirm)
+
+        MarkStuckButtons(now, events);
+        if (status == DeviceStatus.AwaitingConfirm)
         {
             CancelIfTimedOut(now, events);
         }
@@ -128,11 +154,30 @@ internal sealed class DeviceTracker(int device, DeviceIdentity identity, ClaimTu
     /// <summary>Records that the completed gesture was refused the seat.</summary>
     public void RefuseSeat() => status = DeviceStatus.Ready;
 
-    private void Press(int button, TimeSpan now)
+    /// <summary>
+    /// Gets whether the noise detectors judge this pad: every pad but the seat holder, whose own player may hold and mash
+    /// its buttons.
+    /// </summary>
+    private bool DetectorsApply => status != DeviceStatus.Claimed;
+
+    /// <summary>Gets whether a detector firing moves the pad to suspect: only from the states the gesture passes through.</summary>
+    private bool CanTurnSuspect => status is DeviceStatus.Settling or DeviceStatus.Ready or DeviceStatus.AwaitingConfirm or DeviceStatus.Suspect;
+
+    private void Press(int button, TimeSpan now, List<ClaimEvent> events)
     {
-        if (pressedAt.TryAdd(button, now) && status == DeviceStatus.Settling)
+        if (!pressedAt.TryAdd(button, now))
         {
-            RestartQuietWindow(now);
+            return;
+        }
+
+        if (status == DeviceStatus.Settling)
+        {
+            RestartQuietWindowByButton(button, now);
+        }
+
+        if (DetectorsApply && noise.PressIsRepeating(button, now))
+        {
+            Suspect(SuspectReason.RepeatingButton, [button], events);
         }
     }
 
@@ -141,7 +186,7 @@ internal sealed class DeviceTracker(int device, DeviceIdentity identity, ClaimTu
         switch (status)
         {
             case DeviceStatus.Settling:
-                RestartQuietWindow(now);
+                RestartQuietWindowByButton(button, now);
                 return false;
             case DeviceStatus.Ready:
                 StartIfHuman(button, now - downAt, now, events);
@@ -187,14 +232,71 @@ internal sealed class DeviceTracker(int device, DeviceIdentity identity, ClaimTu
 
     private void SettleIfStill(TimeSpan now, List<ClaimEvent> events)
     {
-        if (now - stillSince < tuning.QuietWindow || pressedAt.Count > 0)
+        if (now - stillSince >= tuning.QuietWindow)
         {
+            EndQuietWindow(events);
+        }
+        else if (now - settleStart >= tuning.SettleLimit && DetectorsApply)
+        {
+            Suspect(SuspectReason.NeverSettled | noise.SettleCulprits, noise.RestartingButtons, events);
+        }
+    }
+
+    private void EndQuietWindow(List<ClaimEvent> events)
+    {
+        if (pressedAt.Count > 0)
+        {
+            if (DetectorsApply)
+            {
+                Suspect(SuspectReason.StuckButton, pressedAt.Keys, events);
+            }
+
             return;
         }
 
         rests = axes.ToDictionary(entry => entry.Key, entry => new AxisRest(entry.Value.Reference, entry.Value.Spread, entry.Value.Known));
         status = DeviceStatus.Ready;
         events.Add(new DeviceChanged(Snapshot()));
+    }
+
+    private void MarkStuckButtons(TimeSpan now, List<ClaimEvent> events)
+    {
+        if (!DetectorsApply)
+        {
+            return;
+        }
+
+        List<int> stuck = [.. pressedAt.Where(entry => noise.IsStuck(entry.Value, now)).Select(entry => entry.Key)];
+        if (stuck.Count > 0)
+        {
+            Suspect(SuspectReason.StuckButton, stuck, events);
+        }
+    }
+
+    private void Suspect(SuspectReason reason, IEnumerable<int> buttons, List<ClaimEvent> events)
+    {
+        if (!CanTurnSuspect)
+        {
+            return;
+        }
+
+        if (status == DeviceStatus.AwaitingConfirm)
+        {
+            events.Add(new ClaimCancelled(device, CancelReason.DeviceSuspect));
+        }
+
+        bool changed = status != DeviceStatus.Suspect || (reasons | reason) != reasons;
+        status = DeviceStatus.Suspect;
+        reasons |= reason;
+        foreach (int button in buttons)
+        {
+            changed |= suspectButtons.Add(button);
+        }
+
+        if (changed)
+        {
+            events.Add(new DeviceChanged(Snapshot()));
+        }
     }
 
     private void CancelIfTimedOut(TimeSpan now, List<ClaimEvent> events)
@@ -206,6 +308,16 @@ internal sealed class DeviceTracker(int device, DeviceIdentity identity, ClaimTu
 
         status = DeviceStatus.Ready;
         events.Add(new ClaimCancelled(device, CancelReason.Timeout));
+    }
+
+    private void RestartQuietWindowByButton(int button, TimeSpan now)
+    {
+        if (DetectorsApply)
+        {
+            noise.NoteButtonRestart(button);
+        }
+
+        RestartQuietWindow(now);
     }
 
     private void RestartQuietWindow(TimeSpan now)
