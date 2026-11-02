@@ -35,15 +35,43 @@ internal sealed class Seat(ClaimTuning tuning)
         }
         else if (now - lastActivity >= tuning.SeatStealIdle)
         {
-            DeviceTracker former = holder;
-            former.LoseSeat();
-            Take(claimant, now);
-            events.Add(new SeatMoved(former.Device, claimant.Device));
+            Move(holder, claimant, now, events);
         }
         else
         {
             Refuse(claimant, RefuseReason.SeatBusy, events);
         }
+    }
+
+    /// <summary>Gives the seat to a pad unconditionally, at the host's request; a former holder becomes ready.</summary>
+    /// <param name="claimant">The pad that takes the seat; not the holder.</param>
+    /// <param name="now">The time of the request.</param>
+    /// <param name="events">The events the claim causes, appended in order.</param>
+    public void Force(DeviceTracker claimant, TimeSpan now, List<ClaimEvent> events)
+    {
+        if (holder is null)
+        {
+            Take(claimant, now);
+            events.Add(new SeatClaimed(claimant.Device));
+        }
+        else
+        {
+            Move(holder, claimant, now, events);
+        }
+    }
+
+    /// <summary>Takes a pad's blocking: a holder loses the seat.</summary>
+    /// <param name="blocked">The pad the player blocked.</param>
+    /// <param name="events">The events the blocking causes, appended in order.</param>
+    public void Blocked(DeviceTracker blocked, List<ClaimEvent> events)
+    {
+        if (holder != blocked)
+        {
+            return;
+        }
+
+        Vacate();
+        events.Add(new SeatLost(blocked.Device, SeatLossReason.Blocked));
     }
 
     /// <summary>Takes a button change: the holder's every press and release is activity, and a release frees its button.</summary>
@@ -144,6 +172,13 @@ internal sealed class Seat(ClaimTuning tuning)
     {
         claimant.RefuseSeat();
         events.Add(new ClaimRefused(claimant.Device, reason));
+    }
+
+    private void Move(DeviceTracker former, DeviceTracker claimant, TimeSpan now, List<ClaimEvent> events)
+    {
+        former.LoseSeat();
+        Take(claimant, now);
+        events.Add(new SeatMoved(former.Device, claimant.Device));
     }
 
     private void Take(DeviceTracker claimant, TimeSpan now)

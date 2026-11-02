@@ -17,9 +17,22 @@ public sealed class PadScript
     /// <param name="buttonsDown">The buttons already down at connect.</param>
     /// <param name="axes">Every axis's value at connect, by axis index.</param>
     /// <param name="isKnownGamepad">Whether the engine knows the pad's layout.</param>
+    /// <param name="identity">Who the pad is; <see cref="IdentityOf"/> the device when null.</param>
     /// <returns>This script.</returns>
-    public PadScript Connect(int t, int device, IReadOnlyList<int> buttonsDown, IReadOnlyList<float> axes, bool isKnownGamepad = true) =>
-        Add(t, (claimer, now) => claimer.Connect(device, IdentityOf(device), isKnownGamepad, buttonsDown, axes, now));
+    public PadScript Connect(
+        int t,
+        int device,
+        IReadOnlyList<int> buttonsDown,
+        IReadOnlyList<float> axes,
+        bool isKnownGamepad = true,
+        DeviceIdentity? identity = null
+    ) => Add(t, (claimer, now) => claimer.Connect(device, identity ?? IdentityOf(device), isKnownGamepad, buttonsDown, axes, now));
+
+    /// <summary>Runs a host or settings-screen operation.</summary>
+    /// <param name="t">The time in milliseconds.</param>
+    /// <param name="operation">The operation, given the claimer and the time.</param>
+    /// <returns>This script.</returns>
+    public PadScript Call(int t, Func<PadClaimer, TimeSpan, IReadOnlyList<ClaimEvent>> operation) => Add(t, operation);
 
     /// <summary>Presses a button.</summary>
     /// <param name="t">The time in milliseconds.</param>

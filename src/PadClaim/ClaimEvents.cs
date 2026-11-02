@@ -160,3 +160,7 @@ public sealed record ClaimRefused(int Device, RefuseReason Reason) : ClaimEvent;
 /// <param name="Device">The former holder's device index.</param>
 /// <param name="Reason">Why the seat was lost.</param>
 public sealed record SeatLost(int Device, SeatLossReason Reason) : ClaimEvent;
+
+/// <summary>The player's decisions about pads changed; the host saves them.</summary>
+/// <param name="Settings">The decisions after the change.</param>
+public sealed record SettingsChanged(PadClaimSettings Settings) : ClaimEvent;

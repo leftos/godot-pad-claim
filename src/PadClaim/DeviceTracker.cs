@@ -11,10 +11,13 @@ internal sealed class DeviceTracker(int device, DeviceIdentity identity, ClaimTu
 {
     private readonly Dictionary<int, TimeSpan> pressedAt = [];
     private readonly Dictionary<int, AxisSample> axes = [];
-    private readonly NoiseDetector noise = new(tuning);
     private readonly SortedSet<int> suspectButtons = [];
     private readonly HashSet<int> downAtConnect = [];
+    private readonly HashSet<int> blockedButtons = [];
+    private NoiseDetector noise = new(tuning);
     private Dictionary<int, AxisRest> rests = [];
+    private bool trusted;
+    private bool unlisted;
     private DeviceStatus status = DeviceStatus.Settling;
     private SuspectReason reasons;
     private TimeSpan settleStart;
@@ -34,33 +37,90 @@ internal sealed class DeviceTracker(int device, DeviceIdentity identity, ClaimTu
     /// <summary>Gets the buttons down now.</summary>
     public IReadOnlyCollection<int> ButtonsDown => pressedAt.Keys;
 
-    /// <summary>Marks the device as one the claimer never offers, because it has no gamepad layout.</summary>
-    public void MarkNotAGamepad() => status = DeviceStatus.NotAGamepad;
-
-    /// <summary>Starts the quiet window from the state the engine reported at connect.</summary>
+    /// <summary>
+    /// Admits the pad as it connected: blocked when its rule blocks it, not offered when it lacks a gamepad layout the
+    /// host requires and is not trusted, else settling from the state the engine reported.
+    /// </summary>
+    /// <param name="rule">The player's rule for the pad, or null when there is none.</param>
+    /// <param name="lacksLayout">Whether the pad has no gamepad layout and the host requires one.</param>
     /// <param name="buttonsDown">The buttons down at connect.</param>
     /// <param name="axisValues">Every axis's value at connect, by axis index; none is known until the engine sends it.</param>
     /// <param name="now">The time of the connect.</param>
-    public void StartSettling(IReadOnlyList<int> buttonsDown, IReadOnlyList<float> axisValues, TimeSpan now)
+    public void Admit(DeviceRule? rule, bool lacksLayout, IReadOnlyList<int> buttonsDown, IReadOnlyList<float> axisValues, TimeSpan now)
     {
-        status = DeviceStatus.Settling;
-        settleStart = now;
-        stillSince = now;
-        foreach (int button in buttonsDown)
+        UseRule(rule);
+        if (rule?.Verdict == DeviceVerdict.Blocked)
         {
-            pressedAt[button] = now;
-            downAtConnect.Add(button);
+            status = DeviceStatus.Blocked;
         }
-
-        for (int axis = 0; axis < axisValues.Count; axis++)
+        else if (lacksLayout && !trusted)
         {
-            axes[axis] = new AxisSample(axisValues[axis], known: false);
+            status = DeviceStatus.NotAGamepad;
+        }
+        else
+        {
+            StartSettling(buttonsDown, axisValues, now);
         }
     }
 
+    /// <summary>Admits a pad never seen to connect: ready at once with no quiet window, unless its rule blocks it.</summary>
+    /// <param name="rule">The player's rule for the pad, or null when there is none.</param>
+    public void AdmitUnlisted(DeviceRule? rule)
+    {
+        unlisted = true;
+        UseRule(rule);
+        status = rule?.Verdict == DeviceVerdict.Blocked ? DeviceStatus.Blocked : DeviceStatus.Ready;
+    }
+
+    /// <summary>
+    /// Applies the player's changed rule: a blocked pad leaves the claim process, a pad leaving the block or trusted out
+    /// of quarantine settles afresh, and any other pad keeps its state with the detectors following its trust.
+    /// </summary>
+    /// <param name="rule">The pad's rule after the change, or null when there is none.</param>
+    /// <param name="now">The time of the change.</param>
+    /// <param name="events">The events the change causes, appended in order.</param>
+    public void ApplyRule(DeviceRule? rule, TimeSpan now, List<ClaimEvent> events)
+    {
+        DeviceStatus before = status;
+        bool wasTrusted = trusted;
+        UseRule(rule);
+        if (rule?.Verdict == DeviceVerdict.Blocked)
+        {
+            status = DeviceStatus.Blocked;
+        }
+        else if (LeavesQuarantine(before))
+        {
+            Resettle(now);
+        }
+
+        if (status != before || trusted != wasTrusted)
+        {
+            events.Add(new DeviceChanged(Snapshot()));
+        }
+    }
+
+    /// <summary>Samples a suspect pad afresh: its suspicion is cleared and the quiet window starts over.</summary>
+    /// <param name="now">The time of the request.</param>
+    /// <param name="events">The events the request causes, appended in order; none for a pad that is not suspect.</param>
+    public void Resample(TimeSpan now, List<ClaimEvent> events)
+    {
+        if (status != DeviceStatus.Suspect)
+        {
+            return;
+        }
+
+        Resettle(now);
+        events.Add(new DeviceChanged(Snapshot()));
+    }
+
+    /// <summary>Tells whether the player blocked a button of this pad.</summary>
+    /// <param name="button">The button index.</param>
+    /// <returns>True when the button never counts.</returns>
+    public bool BlocksButton(int button) => blockedButtons.Contains(button);
+
     /// <summary>Gets the pad as the host sees it.</summary>
     /// <returns>The pad's snapshot.</returns>
-    public DeviceSnapshot Snapshot() => new(device, identity, status, reasons, [.. suspectButtons], Trusted: false, Unlisted: false);
+    public DeviceSnapshot Snapshot() => new(device, identity, status, reasons, [.. suspectButtons], trusted, unlisted);
 
     /// <summary>Gets where an axis rested in the quiet window.</summary>
     /// <param name="axis">The axis index.</param>
@@ -184,12 +244,61 @@ internal sealed class DeviceTracker(int device, DeviceIdentity identity, ClaimTu
 
     /// <summary>
     /// Gets whether the noise detectors judge this pad: every pad but the seat holder, whose own player may hold and mash
-    /// its buttons.
+    /// its buttons, a blocked pad and a pad the player trusts. Blocked buttons never reach them.
     /// </summary>
-    private bool DetectorsApply => status != DeviceStatus.Claimed;
+    private bool DetectorsApply => status is not (DeviceStatus.Claimed or DeviceStatus.Blocked) && !trusted;
 
     /// <summary>Gets whether a detector firing moves the pad to suspect: only from the states the gesture passes through.</summary>
     private bool CanTurnSuspect => status is DeviceStatus.Settling or DeviceStatus.Ready or DeviceStatus.AwaitingConfirm or DeviceStatus.Suspect;
+
+    /// <summary>Gets whether a rule change from <paramref name="before"/> sends the pad back to settling.</summary>
+    private bool LeavesQuarantine(DeviceStatus before) =>
+        before == DeviceStatus.Blocked || (trusted && before is (DeviceStatus.Suspect or DeviceStatus.NotAGamepad));
+
+    /// <summary>Takes the rule's trust and blocked buttons; a blocked button that is down is forgotten, as its release will be.</summary>
+    private void UseRule(DeviceRule? rule)
+    {
+        trusted = rule?.Verdict == DeviceVerdict.Trusted;
+        blockedButtons.Clear();
+        if (rule is not null)
+        {
+            blockedButtons.UnionWith(rule.BlockedButtons);
+        }
+
+        foreach (int button in blockedButtons)
+        {
+            pressedAt.Remove(button);
+            downAtConnect.Remove(button);
+        }
+    }
+
+    private void StartSettling(IReadOnlyList<int> buttonsDown, IReadOnlyList<float> axisValues, TimeSpan now)
+    {
+        status = DeviceStatus.Settling;
+        settleStart = now;
+        stillSince = now;
+        foreach (int button in buttonsDown.Where(button => !BlocksButton(button)))
+        {
+            pressedAt[button] = now;
+            downAtConnect.Add(button);
+        }
+
+        for (int axis = 0; axis < axisValues.Count; axis++)
+        {
+            axes[axis] = new AxisSample(axisValues[axis], known: false);
+        }
+    }
+
+    /// <summary>Starts the quiet window and the settle limit over, with the suspicion and the noise history cleared.</summary>
+    private void Resettle(TimeSpan now)
+    {
+        status = DeviceStatus.Settling;
+        settleStart = now;
+        reasons = SuspectReason.None;
+        suspectButtons.Clear();
+        noise = new NoiseDetector(tuning);
+        RestartQuietWindow(now);
+    }
 
     private void Press(int button, TimeSpan now, List<ClaimEvent> events)
     {
@@ -284,13 +393,9 @@ internal sealed class DeviceTracker(int device, DeviceIdentity identity, ClaimTu
 
     private void EndQuietWindow(List<ClaimEvent> events)
     {
-        if (pressedAt.Count > 0)
+        if (pressedAt.Count > 0 && DetectorsApply)
         {
-            if (DetectorsApply)
-            {
-                Suspect(SuspectReason.StuckButton, pressedAt.Keys, events);
-            }
-
+            Suspect(SuspectReason.StuckButton, pressedAt.Keys, events);
             return;
         }
 

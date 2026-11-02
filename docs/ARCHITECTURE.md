@@ -13,6 +13,7 @@ A library that decides which gamepad a player has claimed. Layers: `PadClaim` (a
 | Change the settings file format | `src/PadClaim/PadClaimSettingsJson.cs` → `tests/PadClaim.Tests/SettingsJsonTests.cs` | none yet |
 | Change the claim gesture | `src/PadClaim/DeviceTracker.cs` → `src/PadClaim/PadClaimer.cs` → `tests/PadClaim.Tests/ClaimGestureTests.cs` | none yet |
 | Change the seat (stealing from an idle holder, restore on reconnect, closed claims, release, accepted input) | `src/PadClaim/Seat.cs` → `src/PadClaim/PadClaimer.cs` → `tests/PadClaim.Tests/SeatTests.cs` | none yet |
+| Change the settings operations (block or trust a device, block a button, forget, re-sample, force a claim, unlisted devices) | `src/PadClaim/PadClaimer.cs` → `src/PadClaim/DeviceTracker.cs` → `src/PadClaim/Seat.cs` → `tests/PadClaim.Tests/SettingsTests.cs` | none yet |
 
 ## Layers
 
