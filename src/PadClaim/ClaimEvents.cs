@@ -61,9 +61,6 @@ public enum CancelReason
 
     /// <summary>The pad became suspect.</summary>
     DeviceSuspect,
-
-    /// <summary>The host closed claiming.</summary>
-    ClaimsClosed,
 }
 
 /// <summary>Why a completed gesture did not take the seat.</summary>

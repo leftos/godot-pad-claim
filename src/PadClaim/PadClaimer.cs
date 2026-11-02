@@ -30,6 +30,7 @@ public sealed class PadClaimer
     private readonly Dictionary<int, DeviceTracker> devices = [];
     private readonly Seat seat;
     private PadClaimSettings settings;
+    private int connects;
 
     /// <summary>Creates a claimer with no pads connected and the seat vacant.</summary>
     /// <param name="settings">The player's decisions about pads.</param>
@@ -87,7 +88,7 @@ public sealed class PadClaimer
             Remove(device, events);
         }
 
-        DeviceTracker tracker = new(device, identity, tuning);
+        DeviceTracker tracker = new(device, identity, tuning, ++connects);
         tracker.Admit(RuleFor(identity), !isKnownGamepad && options.RequireKnownGamepad, buttonsDown, axes, now);
         devices[device] = tracker;
         events.Add(new DeviceAdded(tracker.Snapshot()));
@@ -174,11 +175,10 @@ public sealed class PadClaimer
     /// <summary>Vacates the seat at the host's request; the holder becomes ready and a holder that left is forgotten.</summary>
     /// <param name="now">The time of the release.</param>
     /// <returns>The events the release caused: the holder's seat loss, or none when the seat is vacant.</returns>
-    [SuppressMessage("Style", "IDE0060:Remove unused parameter", Justification = "Every host operation takes the time it happens.")]
     public IReadOnlyList<ClaimEvent> ReleaseSeat(TimeSpan now)
     {
         List<ClaimEvent> events = [];
-        seat.Release(events);
+        seat.Release(now, events);
         return events;
     }
 
@@ -224,6 +224,11 @@ public sealed class PadClaimer
     {
         ArgumentNullException.ThrowIfNull(device);
 
+        if (verdict == DeviceVerdict.Blocked)
+        {
+            seat.ForgetAwayHolder(device);
+        }
+
         return Update(device, rule => rule with { Verdict = verdict }, now);
     }
 
@@ -248,6 +253,7 @@ public sealed class PadClaimer
     {
         ArgumentNullException.ThrowIfNull(device);
 
+        seat.ForgetAwayHolder(device);
         ImmutableArray<DeviceRule> kept = [.. settings.Rules.Where(rule => !rule.Device.Matches(device))];
         return kept.Length == settings.Rules.Length ? [] : Change(new PadClaimSettings(kept), now);
     }
@@ -294,7 +300,7 @@ public sealed class PadClaimer
         }
 
         DeviceIdentity identity = new(0, 0, string.Create(CultureInfo.InvariantCulture, $"Unlisted {device}"), null);
-        tracker = new DeviceTracker(device, identity, tuning);
+        tracker = new DeviceTracker(device, identity, tuning, ++connects);
         tracker.AdmitUnlisted(RuleFor(identity));
         devices[device] = tracker;
         events.Add(new DeviceAdded(tracker.Snapshot()));
@@ -367,7 +373,7 @@ public sealed class PadClaimer
         if (devices.Remove(device, out DeviceTracker? tracker))
         {
             tracker.Disconnect(events);
-            seat.Removed(tracker, events);
+            seat.Removed(tracker, connects, events);
         }
 
         events.Add(new DeviceRemoved(device));

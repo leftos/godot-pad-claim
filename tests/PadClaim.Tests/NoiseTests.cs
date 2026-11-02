@@ -218,6 +218,18 @@ public sealed class NoiseTests
         AssertSuspect(Of<DeviceChanged>(events)[^1], Ms(1509), SuspectReason.SubHumanToggle, [D]);
     }
 
+    /// <summary>A button held at connect is exempt from the sub-human check for its first release only.</summary>
+    [Fact]
+    public void HeldAtConnectExemptionIsUsedOnce()
+    {
+        PadClaimer claimer = new(PadClaimSettings.Empty);
+        PadScript script = new PadScript().Connect(0, 0, [D], Centred).Release(5, 0, D);
+
+        IReadOnlyList<(TimeSpan At, ClaimEvent Event)> events = Hold(script, D, 1500, 1505).Run(claimer);
+
+        AssertSuspect(Of<DeviceChanged>(events)[^1], Ms(1505), SuspectReason.SubHumanToggle, [D]);
+    }
+
     private static void AssertSuspect((TimeSpan At, DeviceChanged Event) changed, TimeSpan at, SuspectReason reasons, int[] buttons)
     {
         DeviceSnapshot snapshot = changed.Event.Snapshot;

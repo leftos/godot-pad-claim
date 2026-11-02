@@ -11,6 +11,7 @@ internal sealed class Seat(ClaimTuning tuning)
     private DeviceTracker? holder;
     private TimeSpan lastActivity;
     private DeviceIdentity? awayHolder;
+    private int awaySequence;
 
     /// <summary>Gets the holder's device index, or null when the seat is vacant.</summary>
     public int? Device => holder?.Device;
@@ -104,10 +105,14 @@ internal sealed class Seat(ClaimTuning tuning)
         }
     }
 
-    /// <summary>Takes a pad's removal: a holder loses the seat and its identity is remembered for its return.</summary>
+    /// <summary>
+    /// Takes a pad's removal: a holder loses the seat, and its identity is remembered for its return together with the
+    /// latest connect sequence number, so only a pad connecting after it left counts as the return.
+    /// </summary>
     /// <param name="removed">The pad that disconnected.</param>
+    /// <param name="latestSequence">The sequence number of the latest connect so far.</param>
     /// <param name="events">The events the removal causes, appended in order.</param>
-    public void Removed(DeviceTracker removed, List<ClaimEvent> events)
+    public void Removed(DeviceTracker removed, int latestSequence, List<ClaimEvent> events)
     {
         if (holder != removed)
         {
@@ -116,17 +121,31 @@ internal sealed class Seat(ClaimTuning tuning)
 
         Vacate();
         awayHolder = removed.Identity;
+        awaySequence = latestSequence;
         events.Add(new SeatLost(removed.Device, SeatLossReason.Disconnected));
     }
 
-    /// <summary>Gives the seat back to a pad that just settled when it is the only connected match for the holder that left.</summary>
+    /// <summary>Forgets a holder that left when the player blocks or forgets its identity, so its return is never given the seat.</summary>
+    /// <param name="identity">The identity the player blocked or forgot.</param>
+    public void ForgetAwayHolder(DeviceIdentity identity)
+    {
+        if (awayHolder?.Matches(identity) == true)
+        {
+            awayHolder = null;
+        }
+    }
+
+    /// <summary>
+    /// Gives the seat back to a pad that just settled when it connected after the holder left and is the only connected
+    /// match for it.
+    /// </summary>
     /// <param name="settled">The pad that just became ready.</param>
     /// <param name="connected">Every connected pad, the settled one included.</param>
     /// <param name="now">The time it settled.</param>
     /// <param name="events">The events the restore causes, appended in order.</param>
     public void TryRestore(DeviceTracker settled, IEnumerable<DeviceTracker> connected, TimeSpan now, List<ClaimEvent> events)
     {
-        if (holder is not null || awayHolder is null || !awayHolder.Matches(settled.Identity))
+        if (holder is not null || awayHolder is null || settled.Sequence <= awaySequence || !awayHolder.Matches(settled.Identity))
         {
             return;
         }
@@ -142,8 +161,9 @@ internal sealed class Seat(ClaimTuning tuning)
     }
 
     /// <summary>Vacates the seat at the host's request and forgets a holder that left.</summary>
+    /// <param name="now">The time of the release.</param>
     /// <param name="events">The events the release causes, appended in order; none when the seat is vacant.</param>
-    public void Release(List<ClaimEvent> events)
+    public void Release(TimeSpan now, List<ClaimEvent> events)
     {
         awayHolder = null;
         if (holder is null)
@@ -152,7 +172,7 @@ internal sealed class Seat(ClaimTuning tuning)
         }
 
         DeviceTracker former = holder;
-        former.LoseSeat();
+        former.LoseSeat(now);
         Vacate();
         events.Add(new SeatLost(former.Device, SeatLossReason.Released));
     }
@@ -176,7 +196,7 @@ internal sealed class Seat(ClaimTuning tuning)
 
     private void Move(DeviceTracker former, DeviceTracker claimant, TimeSpan now, List<ClaimEvent> events)
     {
-        former.LoseSeat();
+        former.LoseSeat(now);
         Take(claimant, now);
         events.Add(new SeatMoved(former.Device, claimant.Device));
     }

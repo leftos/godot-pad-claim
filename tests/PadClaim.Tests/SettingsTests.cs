@@ -294,6 +294,67 @@ public sealed class SettingsTests
         Assert.Empty(rule.BlockedButtons);
     }
 
+    /// <summary>A pad without a known gamepad layout that is unblocked is not offered again, rather than settling.</summary>
+    [Fact]
+    public void UnknownPadUnblockedReturnsToNotAGamepad()
+    {
+        PadClaimer claimer = new(RuleFor(DeviceVerdict.Blocked));
+        PadScript script = new PadScript()
+            .Connect(0, 0, NoButtons, Centred, isKnownGamepad: false)
+            .Call(1500, (pads, now) => pads.SetVerdict(Pad0, DeviceVerdict.None, now))
+            .Until(2600);
+
+        IReadOnlyList<(TimeSpan At, ClaimEvent Event)> events = script.Run(claimer);
+
+        Assert.Equal(DeviceStatus.Blocked, Assert.Single(Of<DeviceAdded>(events)).Event.Snapshot.Status);
+        AssertChangedThenSaved(At(events, 1500), DeviceStatus.NotAGamepad);
+        Assert.Equal(DeviceStatus.NotAGamepad, StatusOf(claimer, 0));
+    }
+
+    /// <summary>A pad without a known gamepad layout that loses the player's trust is not offered again.</summary>
+    [Fact]
+    public void UnknownPadUntrustedReturnsToNotAGamepad()
+    {
+        PadClaimer claimer = new(PadClaimSettings.Empty);
+        PadScript script = new PadScript()
+            .Connect(0, 0, NoButtons, Centred, isKnownGamepad: false)
+            .Call(1500, (pads, now) => pads.SetVerdict(Pad0, DeviceVerdict.Trusted, now))
+            .Call(3000, (pads, now) => pads.SetVerdict(Pad0, DeviceVerdict.None, now))
+            .Until(3100);
+
+        IReadOnlyList<(TimeSpan At, ClaimEvent Event)> events = script.Run(claimer);
+
+        Assert.Contains(events, recorded => recorded.At == Ms(2500) && recorded.Event is DeviceChanged { Snapshot.Status: DeviceStatus.Ready });
+        AssertChangedThenSaved(At(events, 3000), DeviceStatus.NotAGamepad);
+        Assert.Equal(DeviceStatus.NotAGamepad, StatusOf(claimer, 0));
+    }
+
+    /// <summary>Blocking the identity of a holder that disconnected forgets it, so an unblocked return is not given the seat.</summary>
+    [Fact]
+    public void BlockingAnAwayHolderForgetsIt()
+    {
+        PadClaimer claimer = new(PadClaimSettings.Empty);
+        PadScript script = CleanClaim(ConnectedPad(0), 0, 1500)
+            .Disconnect(3000, 0)
+            .Call(3200, (pads, now) => pads.SetVerdict(Pad0, DeviceVerdict.Blocked, now))
+            .Call(3300, (pads, now) => pads.SetVerdict(Pad0, DeviceVerdict.None, now))
+            .Connect(3500, 3, NoButtons, Centred, identity: Pad0)
+            .Until(4600);
+
+        IReadOnlyList<(TimeSpan At, ClaimEvent Event)> events = script.Run(claimer);
+
+        Assert.Empty(Of<SeatRestored>(events));
+        Assert.Null(claimer.SeatDevice);
+        Assert.Equal(DeviceStatus.Ready, StatusOf(claimer, 3));
+    }
+
+    private static void AssertChangedThenSaved(List<ClaimEvent> events, DeviceStatus status)
+    {
+        Assert.Equal(2, events.Count);
+        Assert.Equal(status, Assert.IsType<DeviceChanged>(events[0]).Snapshot.Status);
+        Assert.IsType<SettingsChanged>(events[1]);
+    }
+
     private static PadClaimSettings RuleFor(DeviceVerdict verdict, params int[] blockedButtons) =>
         new([new DeviceRule(Pad0, verdict, [.. blockedButtons])]);
 
