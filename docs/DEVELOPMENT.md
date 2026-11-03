@@ -49,12 +49,12 @@ A filter needs the full class name or a leading wildcard: `-Filter "*ReferenceTe
 `prek.toml` installs two stages. At pre-commit, in this order:
 
 1. The builtin checks: `trailing-whitespace`, `end-of-file-fixer`, `mixed-line-ending --fix=lf` (every file LF but `.bat` and `.cmd`), `check-merge-conflict`, `detect-private-key` and `check-added-large-files` at 1024 KB.
-2. `dotnet-format-style`: `dotnet format style` over the staged C# files (`tools/hooks/dotnet-format-wrapper.ps1`).
+2. `dotnet-format-style`: `tools/gate.ps1 csharp format` over the staged C# files, restoring their projects first when `obj` is missing or stale.
 3. `csharpier`: `dotnet csharpier format` over the staged C# files (`tools/hooks/csharpier-wrapper.ps1`).
 4. `psscriptanalyzer`: PSScriptAnalyzer over the staged PowerShell, under `PSScriptAnalyzerSettings.psd1`.
 5. `line-length`: 150 characters for C# and PowerShell (`tools/hooks/Test-LineLength.ps1`).
 6. `gitleaks`: `gitleaks git --pre-commit --staged --redact`.
 
-The fixers run and re-stage first and the readers report on the result. The two C# wrappers `git add` what they changed. The hook scripts are pwsh, not bash: prek launched from PowerShell on Windows can resolve a bash hook to the WSL stub, which has no dotnet.
+The fixers run and re-stage first and the readers report on the result. `gate csharp format` and the csharpier wrapper `git add` what they changed. The hook scripts are pwsh, not bash: prek launched from PowerShell on Windows can resolve a bash hook to the WSL stub, which has no dotnet.
 
 At pre-push, `padclaim-test` (`padclaim.ps1 test`: a warnings-as-errors build and the whole suite) runs unless the push carries Markdown alone.

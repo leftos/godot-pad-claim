@@ -19,14 +19,14 @@ hooks = [
 repo = "local"
 
 # Order matters: the fixers run and re-stage first and the readers report on the result, so the commit is checked as it
-# will land. Both C# wrappers `git add` the files they were handed so the commit proceeds instead of failing with "files
-# were modified by this hook". They are pwsh because prek launched from PowerShell on Windows can hand a bash hook the
-# WSL stub, which has no dotnet.
+# will land. `gate csharp format` and the csharpier wrapper `git add` the files they were handed so the commit proceeds
+# instead of failing with "files were modified by this hook". The hooks are pwsh because prek launched from PowerShell on
+# Windows can hand a bash hook the WSL stub, which has no dotnet.
 
 [[repos.hooks]]
 id = "dotnet-format-style"
 name = "dotnet format style (info)"
-entry = "pwsh tools/hooks/dotnet-format-wrapper.ps1 style"
+entry = "pwsh -NoProfile -File tools/gate.ps1 csharp format"
 language = "system"
 types = ["c#"]
 require_serial = true
