@@ -14,4 +14,3 @@ A C# library for Godot 4 that lets a player claim a gamepad by a deliberate gest
 - The repo is public: no private paths, machine names or secrets in any file.
 - Every build and test runs through `padclaim.ps1`, which runs it under the gate (`tools/gate.ps1`).
 - Test names are PascalCase with no underscores.
-- Code and test conventions follow the owner's user-level rulebook (`~/.claude/CLAUDE.md` and its skills); nothing here overrides it.
