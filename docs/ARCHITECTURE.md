@@ -17,6 +17,7 @@ A library that decides which gamepad a player has claimed. Layers: `PadClaim` (a
 | Change how Godot's input reaches the core (connect scan, stamping, which events `Feed` swallows) | `src/PadClaim.GodotInput/GodotPadSource.cs` → `demo/Smoke/ClaimSmoke.cs` | none yet |
 | Change the demo or the headless smoke | `demo/Main.cs`, `demo/Smoke/ClaimSmoke.cs` → `padclaim.ps1` (`demo` and `smoke` verbs) | [DEVELOPMENT.md](DEVELOPMENT.md) |
 | Change the seat (stealing from an idle holder, restore on reconnect, closed claims, release, accepted input) | `src/PadClaim/Seat.cs` → `src/PadClaim/PadClaimer.cs` → `tests/PadClaim.Tests/SeatTests.cs` | none yet |
+| Change how `DeviceRule`, `PadClaimSettings` or `DeviceSnapshot` compare or print | `src/PadClaim/ArrayValues.cs` → the record's `Equals`, `GetHashCode` and `PrintMembers` in `src/PadClaim/` → `tests/PadClaim.Tests/RecordTextTests.cs` | none yet |
 | Change the settings operations (block or trust a device, block a button, forget, re-sample, force a claim, unlisted devices) | `src/PadClaim/PadClaimer.cs` → `src/PadClaim/DeviceTracker.cs` → `src/PadClaim/Seat.cs` → `tests/PadClaim.Tests/SettingsTests.cs` | none yet |
 
 ## Layers
@@ -37,6 +38,7 @@ Times are `TimeSpan` since an origin the host supplies; the core never reads a c
 - **`DeviceIdentity`**: vendor id, product id, name and serial, read from `get_joy_info` by `FromJoyInfo`. `Matches` compares ids when both sides report both, else names, and serials only when both sides have one.
 - **Settings**: `PadClaimSettings` holds one `DeviceRule` per pad (identity, `DeviceVerdict` of `None`, `Blocked` or `Trusted`, and the blocked buttons). `PadClaimSettingsJson.Write` and `TryRead` turn it into and out of versioned JSON.
 - **`DeviceSnapshot`**: a connected pad's `Device`, `Identity`, `Status` (`DeviceStatus`), `Reasons` (the flags of `SuspectReason`), `SuspectButtons`, `Trusted` and `Unlisted`.
+- **Value semantics**: `DeviceRule`, `PadClaimSettings` and `DeviceSnapshot` compare by value, their array members element by element in order (a default array equals only a default one, never an empty one), so equal instances built apart are equal, hash alike and work as dictionary keys. `ToString` prints the elements, and the events that carry them (`DeviceAdded`, `DeviceChanged`, `SettingsChanged`) print the same.
 - **Events**: `DeviceAdded`, `DeviceChanged`, `DeviceRemoved`, `ClaimStarted`, `ClaimCancelled` (`CancelReason`), `SeatClaimed`, `SeatMoved`, `SeatRestored`, `ClaimRefused` (`RefuseReason`), `SeatLost` (`SeatLossReason`) and `SettingsChanged`, all records under the abstract `ClaimEvent`.
 
 **Adapter, `PadClaim.GodotInput`:** `GodotPadSource` takes a `PadClaimer` and, optionally, a clock. `Raised` carries every event; `Start` connects the pads already present and subscribes `Input.JoyConnectionChanged`; `Feed` takes an `InputEvent` from the host's `_Input` and returns true when the host should mark it handled; `Tick` runs from `_Process`; `Dispose` unsubscribes. A source is started once and lives as long as its claimer.
@@ -92,12 +94,12 @@ A change to A that needs a change to B, where nothing but a test or a reviewer c
 - **Subscribe the static `Input.JoyConnectionChanged` in the adapter** → also remove the handler in `Dispose`. A static subscription left behind stops the editor unloading the assembly on rebuild.
 - **Connect a pad from `Start`'s scan of `Input.GetConnectedJoypads()`** → Godot emits `joy_connection_changed` deferred but updates the connected list at once, so the same pad's signal arrives after the scan. `GodotPadSource` keeps the set of devices it has connected and skips a second connect.
 - **Add a branch to the claim state machine** → keep CA1502 at 8: dispatch by state to small methods rather than growing one method.
-- **Assert on a record holding `ImmutableArray`** → the record compares the array by reference, so two equal records are unequal. Tests compare fields.
+- **Add a member to `DeviceRule`, `PadClaimSettings` or `DeviceSnapshot`** → also add it to that record's hand-written `Equals`, `GetHashCode` and `PrintMembers`; the compiler does not warn. A record holding an `ImmutableArray` member uses `ArrayValues` (`src/PadClaim/ArrayValues.cs`) for it.
 
 ## Test locations
 
 - `tests/PadClaim.Tests/ReferenceTests.cs`: pins from assembly metadata that the core and the tests reference no Godot assembly.
-- `tests/PadClaim.Tests/`: every other test of the core goes here, one class per concern (`IdentityTests`, `SettingsJsonTests`, `ClaimTuningTests`, `ClaimGestureTests`, `NoiseTests`, `SeatTests`, `SettingsTests`), with names in PascalCase and no underscores.
+- `tests/PadClaim.Tests/`: every other test of the core goes here, one class per concern (`IdentityTests`, `SettingsJsonTests`, `ClaimTuningTests`, `ClaimGestureTests`, `NoiseTests`, `SeatTests`, `SettingsTests`, `RecordTextTests`), with names in PascalCase and no underscores.
 - `demo/`: a Godot project that hosts the adapter, for running by hand against real or injected pads (`padclaim.ps1 demo` builds it).
 - `demo/Smoke/ClaimSmoke.cs`: the headless smoke (`padclaim.ps1 smoke`). It drives the adapter in the real engine on a clock it moves itself: it checks that injected events reach `_Input`, that one-frame taps and a repeated single button do not claim, and that a two-button gesture takes the seat. It exits 0 on success, 1 on a failed scenario, 2 on its watchdog and 3 when injected events do not reach `_Input`.
 

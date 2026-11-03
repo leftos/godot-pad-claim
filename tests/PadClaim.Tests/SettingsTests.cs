@@ -763,6 +763,41 @@ public sealed class SettingsTests
         Assert.Empty(blocked.SuspectButtons);
     }
 
+    /// <summary>Rules whose blocked buttons hold the same buttons in separately built arrays are equal.</summary>
+    [Fact]
+    public void DeviceRulesWithEqualButtonsAreEqual()
+    {
+        DeviceRule first = new(Pad0, DeviceVerdict.Blocked, [3, 5]);
+        DeviceRule second = new(Pad0, DeviceVerdict.Blocked, [3, 5]);
+
+        Assert.True(first.Equals(second));
+        Assert.True(first == second);
+        Assert.Equal(first.GetHashCode(), second.GetHashCode());
+    }
+
+    /// <summary>Rules whose blocked buttons hold the same buttons in another order are not equal.</summary>
+    [Fact]
+    public void DeviceRulesWithDifferentButtonOrderDiffer()
+    {
+        DeviceRule first = new(Pad0, DeviceVerdict.Blocked, [3, 5]);
+        DeviceRule second = new(Pad0, DeviceVerdict.Blocked, [5, 3]);
+
+        Assert.False(first.Equals(second));
+        Assert.False(first == second);
+    }
+
+    /// <summary>Settings whose rules were built in separate arrays holding equal rules are equal.</summary>
+    [Fact]
+    public void SettingsWithEqualRulesAreEqual()
+    {
+        PadClaimSettings first = new([new DeviceRule(Pad0, DeviceVerdict.Blocked, [3, 5])]);
+        PadClaimSettings second = new([new DeviceRule(Pad0, DeviceVerdict.Blocked, [3, 5])]);
+
+        Assert.True(first.Equals(second));
+        Assert.True(first == second);
+        Assert.Equal(first.GetHashCode(), second.GetHashCode());
+    }
+
     private static PadScript LayoutlessPadClaimsThenIsUntrusted() =>
         CleanClaim(
                 new PadScript()

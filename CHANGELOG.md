@@ -15,6 +15,7 @@ The first version, 0.1.0.
 - Pads are identified by vendor and product ids from Godot's joypad info, else by name, and by serial when both have one.
 - Settings round-trip through versioned JSON that the host saves on `SettingsChanged`; the library never touches the file system.
 - Every threshold is a `ClaimTuning` property with a default.
+- Pad rules, settings and snapshots compare by their button and rule values and print them, so equal settings are equal however they were built.
 - `GodotPadSource` feeds Godot's joypad input to the engine-free core and tells the host which events to swallow.
 - Pads injected by test tools such as godot-mcp are ignored unless the host sets `UnlistedDevices = Accept`.
 - A demo project shows every pad, the seat and the events, and `padclaim.ps1 smoke` proves the claim headless in the real engine.

@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Text;
 
 namespace PadClaim;
 
@@ -92,7 +93,10 @@ public enum SeatLossReason
 /// <param name="Known">Whether the engine sent a value for the axis; until it does, the value read at connect may be wrong.</param>
 public sealed record AxisRest(float Centre, float Spread, bool Known);
 
-/// <summary>What the claimer knows about one connected pad.</summary>
+/// <summary>
+/// What the claimer knows about one connected pad.
+/// Equality and the text compare and print the array's elements, in order.
+/// </summary>
 /// <param name="Device">The engine's device index for this connection.</param>
 /// <param name="Identity">Who the pad is.</param>
 /// <param name="Status">Where the pad stands in the claim process.</param>
@@ -108,7 +112,45 @@ public sealed record DeviceSnapshot(
     ImmutableArray<int> SuspectButtons,
     bool Trusted,
     bool Unlisted
-);
+)
+{
+    /// <summary>Tells whether another snapshot holds equal members, comparing the suspect buttons by their values in order.</summary>
+    /// <param name="other">The snapshot to compare with.</param>
+    /// <returns>True when every member is equal.</returns>
+    public bool Equals(DeviceSnapshot? other) => ReferenceEquals(this, other) || (other is not null && SameValues(other));
+
+    private bool SameValues(DeviceSnapshot other) =>
+        Device == other.Device
+        && EqualityComparer<DeviceIdentity>.Default.Equals(Identity, other.Identity)
+        && Status == other.Status
+        && Reasons == other.Reasons
+        && ArrayValues.Same(SuspectButtons, other.SuspectButtons)
+        && Trusted == other.Trusted
+        && Unlisted == other.Unlisted;
+
+    /// <inheritdoc/>
+    public override int GetHashCode()
+    {
+        var hash = new HashCode();
+        hash.Add(Device);
+        hash.Add(Identity);
+        hash.Add(Status);
+        hash.Add(Reasons);
+        ArrayValues.AddTo(ref hash, SuspectButtons);
+        hash.Add(Trusted);
+        hash.Add(Unlisted);
+        return hash.ToHashCode();
+    }
+
+    private bool PrintMembers(StringBuilder builder)
+    {
+        builder.Append("Device = ").Append(Device).Append(", Identity = ").Append(Identity).Append(", Status = ").Append(Status);
+        builder.Append(", Reasons = ").Append(Reasons).Append(", SuspectButtons = ");
+        ArrayValues.Append(builder, SuspectButtons);
+        builder.Append(", Trusted = ").Append(Trusted).Append(", Unlisted = ").Append(Unlisted);
+        return true;
+    }
+}
 
 /// <summary>Something the claimer decided, returned to the host in the order it happened.</summary>
 public abstract record ClaimEvent;

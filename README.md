@@ -107,8 +107,6 @@ On Windows, HidHide hides real pads from programs it does not list. Before testi
 
 ## Known issues
 
-- `DeviceRule` equality compares the blocked-buttons array by reference, so two equal rules can compare unequal (DRIVE-25).
-- A `DeviceSnapshot`'s `ToString` prints its suspect-buttons array as a type name (DRIVE-32).
 - A suspect pad can raise a duplicate `DeviceChanged` (DRIVE-33).
 
 ## Documentation
